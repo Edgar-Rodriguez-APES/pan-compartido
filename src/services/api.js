@@ -106,6 +106,16 @@ export const campaignService = {
     return response.data;
   },
 
+  getActive: async () => {
+    const response = await api.get('/campaigns/active');
+    return response.data;
+  },
+
+  getStatistics: async () => {
+    const response = await api.get('/campaigns/statistics');
+    return response.data;
+  },
+
   getById: async (id) => {
     const response = await api.get(`/campaigns/${id}`);
     return response.data;
@@ -121,8 +131,28 @@ export const campaignService = {
     return response.data;
   },
 
-  delete: async (id) => {
-    const response = await api.delete(`/campaigns/${id}`);
+  activate: async (id) => {
+    const response = await api.post(`/campaigns/${id}/activate`);
+    return response.data;
+  },
+
+  complete: async (id) => {
+    const response = await api.post(`/campaigns/${id}/complete`);
+    return response.data;
+  },
+
+  cancel: async (id, reason = null) => {
+    const response = await api.post(`/campaigns/${id}/cancel`, { reason });
+    return response.data;
+  },
+
+  getDonations: async (id, params = {}) => {
+    const response = await api.get(`/campaigns/${id}/donations`, { params });
+    return response.data;
+  },
+
+  updateProgress: async (id) => {
+    const response = await api.post(`/campaigns/${id}/update-progress`);
     return response.data;
   }
 };
@@ -302,6 +332,71 @@ export const brandingService = {
       templateType,
       data
     });
+    return response.data;
+  }
+};
+
+// Servicios de perfil de usuario
+export const profileService = {
+  getCompleteProfile: async () => {
+    const response = await api.get('/profile/complete');
+    return response.data;
+  },
+
+  getDonorStats: async () => {
+    const response = await api.get('/profile/donor-stats');
+    return response.data;
+  },
+
+  getConsumerStats: async () => {
+    const response = await api.get('/profile/consumer-stats');
+    return response.data;
+  },
+
+  getActivity: async (limit = 10) => {
+    const response = await api.get('/profile/activity', {
+      params: { limit }
+    });
+    return response.data;
+  },
+
+  getDonationPreferences: async () => {
+    const response = await api.get('/profile/donation-preferences');
+    return response.data;
+  },
+
+  updateDonationPreferences: async (preferences) => {
+    const response = await api.put('/profile/donation-preferences', preferences);
+    return response.data;
+  },
+
+  getPurchasePreferences: async () => {
+    const response = await api.get('/profile/purchase-preferences');
+    return response.data;
+  },
+
+  updatePurchasePreferences: async (preferences) => {
+    const response = await api.put('/profile/purchase-preferences', preferences);
+    return response.data;
+  },
+
+  getRecommendations: async () => {
+    const response = await api.get('/profile/recommendations');
+    return response.data;
+  },
+
+  getImpactSummary: async () => {
+    const response = await api.get('/profile/impact-summary');
+    return response.data;
+  },
+
+  getComparison: async () => {
+    const response = await api.get('/profile/comparison');
+    return response.data;
+  },
+
+  clearCache: async () => {
+    const response = await api.delete('/profile/cache');
     return response.data;
   }
 };

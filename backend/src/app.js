@@ -12,6 +12,7 @@ const authMiddleware = require('./middleware/authMiddleware');
 const authRoutes = require('./routes/auth');
 const tenantsRoutes = require('./routes/tenants');
 const brandingRoutes = require('./routes/branding');
+const profileRoutes = require('./routes/profile');
 const campaignsRoutes = require('./routes/campaigns');
 const donationsRoutes = require('./routes/donations');
 const usersRoutes = require('./routes/users');
@@ -60,6 +61,7 @@ app.use('/api/v1', tenantMiddleware);
 // Rutas protegidas (requieren autenticación)
 app.use('/api/v1/tenants', authMiddleware, tenantsRoutes);
 app.use('/api/v1/branding', authMiddleware, brandingRoutes);
+app.use('/api/v1/profile', authMiddleware, profileRoutes);
 app.use('/api/v1/campaigns', authMiddleware, campaignsRoutes);
 app.use('/api/v1/donations', authMiddleware, donationsRoutes);
 app.use('/api/v1/users', authMiddleware, usersRoutes);

@@ -31,17 +31,24 @@
     - Desarrollar templates personalizables para mensajes
     - _Requerimientos: 1.4, 12.1, 12.2_
 
-- [ ] 3. Crear sistema de gestión de usuarios y autenticación
-  - [ ] 3.1 Implementar registro y autenticación de usuarios
+- [x] 3. Crear sistema de gestión de usuarios y autenticación
+
+  - [x] 3.1 Implementar registro y autenticación de usuarios
+
 
 
 
     - Desarrollar sistema de registro para feligreses con validación de teléfono
     - Implementar autenticación OAuth 2.0 + JWT
     - Crear sistema de roles (feligrés, coordinador, párroco, admin)
+
+
     - _Requerimientos: 2.1, 15.1_
 
   - [ ] 3.2 Desarrollar perfiles de usuario dual (donante-consumidor)
+
+
+
     - Crear modelo de datos que soporte doble rol
     - Implementar interfaces para gestión de preferencias
     - Desarrollar historial unificado de donaciones y compras
