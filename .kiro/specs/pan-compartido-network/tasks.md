@@ -59,6 +59,7 @@
 
     - _Requerimientos: 2.1, 2.2, 2.4_
 
+
 - [ ] 4. Implementar sistema de campañas y necesidades
   - [ ] 4.1 Crear gestión de campañas de donación
     - Desarrollar CRUD para campañas con metas y fechas
