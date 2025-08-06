@@ -1,70 +1,196 @@
-# Getting Started with Create React App
+# Red Pan Compartido
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+Sistema multi-parroquial de gestión de donaciones que conecta donantes, consumidores y proveedores para facilitar la distribución de mercados alimenticios a familias necesitadas.
 
-## Available Scripts
+## 🏗️ Arquitectura
 
-In the project directory, you can run:
+La plataforma utiliza una arquitectura de microservicios con:
 
-### `npm start`
+- **Frontend**: React.js con Tailwind CSS
+- **Backend**: Node.js con Express
+- **Base de Datos**: PostgreSQL con esquema multi-tenant
+- **Cache**: Redis para sesiones y datos frecuentes
+- **Autenticación**: JWT con roles y permisos
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+## 🚀 Inicio Rápido
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+### Prerrequisitos
 
-### `npm test`
+- Node.js 18+ 
+- PostgreSQL 13+
+- Redis 6+
+- npm o yarn
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+### Instalación
 
-### `npm run build`
+1. **Clonar el repositorio**
+```bash
+git clone <repository-url>
+cd pan-compartido
+```
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+2. **Instalar dependencias del frontend**
+```bash
+npm install
+```
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+3. **Instalar dependencias del backend**
+```bash
+cd backend
+npm install
+```
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+4. **Configurar variables de entorno**
+```bash
+cd backend
+cp .env.example .env
+# Editar .env con tus configuraciones
+```
 
-### `npm run eject`
+5. **Configurar base de datos**
+```bash
+# Crear base de datos PostgreSQL
+createdb pan_compartido
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+# Ejecutar migraciones
+npm run migrate
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+# Cargar datos de prueba
+npm run seed
+```
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+6. **Iniciar servicios**
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+Terminal 1 (Backend):
+```bash
+cd backend
+npm run dev
+```
 
-## Learn More
+Terminal 2 (Frontend):
+```bash
+npm start
+```
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+## 🔐 Credenciales de Prueba
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+**Tenant Demo**: `demo`
+- **Párroco**: admin@demo.pancompartido.org / admin123
+- **Feligrés**: maria@example.com / feligres123
 
-### Code Splitting
+## 📁 Estructura del Proyecto
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+```
+pan-compartido/
+├── backend/                 # API Backend
+│   ├── src/
+│   │   ├── routes/         # Rutas de la API
+│   │   ├── middleware/     # Middleware personalizado
+│   │   ├── config/         # Configuraciones
+│   │   └── utils/          # Utilidades
+│   ├── migrations/         # Migraciones de BD
+│   └── seeds/             # Datos de prueba
+├── src/                    # Frontend React
+│   ├── components/        # Componentes React
+│   ├── contexts/          # Contextos (Auth, etc.)
+│   ├── services/          # Servicios API
+│   └── utils/             # Utilidades
+├── .kiro/specs/           # Especificaciones del proyecto
+└── docs/                  # Documentación
+```
 
-### Analyzing the Bundle Size
+## 🌟 Características Principales
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+### ✅ Implementado
+- [x] Arquitectura multi-tenant
+- [x] Sistema de autenticación JWT
+- [x] Base de datos PostgreSQL con migraciones
+- [x] API REST con middleware de seguridad
+- [x] Frontend React con contexto de autenticación
+- [x] Interfaz de login responsiva
 
-### Making a Progressive Web App
+### 🚧 En Desarrollo
+- [ ] Sistema de campañas y donaciones
+- [ ] Integración con pasarelas de pago
+- [ ] WhatsApp Bot
+- [ ] Dashboard para párrocos
+- [ ] Sistema de proveedores y subastas
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+## 🔧 Scripts Disponibles
 
-### Advanced Configuration
+### Frontend
+```bash
+npm start          # Servidor de desarrollo
+npm run build      # Build de producción
+npm test           # Ejecutar tests
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+### Backend
+```bash
+npm run dev        # Servidor con nodemon
+npm start          # Servidor de producción
+npm run migrate    # Ejecutar migraciones
+npm run seed       # Cargar datos de prueba
+npm test           # Ejecutar tests
+```
 
-### Deployment
+## 🌐 API Endpoints
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+### Autenticación
+- `POST /api/v1/auth/login` - Iniciar sesión
+- `POST /api/v1/auth/register` - Registrar usuario
+- `GET /api/v1/auth/verify` - Verificar token
 
-### `npm run build` fails to minify
+### Tenants
+- `GET /api/v1/tenants/current` - Obtener tenant actual
+- `PUT /api/v1/tenants/current` - Actualizar configuración
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+### Próximamente
+- Campañas, Donaciones, Pagos, Proveedores, etc.
+
+## 🏛️ Multi-Tenancy
+
+Cada parroquia es un "tenant" independiente con:
+- Datos completamente aislados
+- Configuración personalizable (colores, logos, contacto)
+- Usuarios y roles específicos por parroquia
+- Subdominios personalizados (futuro)
+
+## 🔒 Seguridad
+
+- Autenticación JWT con expiración
+- Middleware de autorización por roles
+- Validación de datos con Joi
+- Encriptación de contraseñas con bcrypt
+- Headers de seguridad con Helmet
+- Aislamiento de datos por tenant
+
+## 📊 Monitoreo
+
+- Logs estructurados con Winston
+- Métricas de performance
+- Health checks en `/health`
+- Error tracking y alertas
+
+## 🤝 Contribuir
+
+1. Fork el proyecto
+2. Crear rama feature (`git checkout -b feature/nueva-funcionalidad`)
+3. Commit cambios (`git commit -m 'Agregar nueva funcionalidad'`)
+4. Push a la rama (`git push origin feature/nueva-funcionalidad`)
+5. Abrir Pull Request
+
+## 📄 Licencia
+
+Este proyecto está bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) para detalles.
+
+## 📞 Soporte
+
+Para soporte técnico o preguntas:
+- Email: soporte@pancompartido.org
+- Documentación: [docs/](docs/)
+- Issues: GitHub Issues
+
+---
+
+**Pan Compartido** - Conectando corazones, alimentando esperanzas 🙏

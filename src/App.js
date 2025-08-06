@@ -1,8 +1,28 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Package, Users, Bell, CheckCircle, AlertCircle, Calendar, Phone, ShoppingCart, MessageCircle, FileText, Clock } from 'lucide-react';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import Login from './components/Login';
 
 const PanCompartidoSystem = () => {
+  const { isAuthenticated, isLoading, user, tenant, logout } = useAuth();
   const [activeTab, setActiveTab] = useState('dashboard');
+
+  // Mostrar loading mientras se verifica la autenticación
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Cargando...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Mostrar login si no está autenticado
+  if (!isAuthenticated) {
+    return <Login onSuccess={() => window.location.reload()} />;
+  }
   const [donations, setDonations] = useState([]);
   const [families, setFamilies] = useState([]);
   const [notifications, setNotifications] = useState([]);
@@ -675,4 +695,13 @@ const PanCompartidoSystem = () => {
   );
 };
 
-export default PanCompartidoSystem;
+// Componente principal envuelto con AuthProvider
+const App = () => {
+  return (
+    <AuthProvider>
+      <PanCompartidoSystem />
+    </AuthProvider>
+  );
+};
+
+export default App;
