@@ -46,6 +46,7 @@
     - _Requerimientos: 2.1, 15.1_
 
 
+
   - [x] 3.2 Desarrollar perfiles de usuario dual (donante-consumidor)
 
 
