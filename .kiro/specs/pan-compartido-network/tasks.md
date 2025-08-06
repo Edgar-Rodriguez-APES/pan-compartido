@@ -45,13 +45,17 @@
 
     - _Requerimientos: 2.1, 15.1_
 
-  - [ ] 3.2 Desarrollar perfiles de usuario dual (donante-consumidor)
+
+  - [x] 3.2 Desarrollar perfiles de usuario dual (donante-consumidor)
+
 
 
 
     - Crear modelo de datos que soporte doble rol
     - Implementar interfaces para gestión de preferencias
     - Desarrollar historial unificado de donaciones y compras
+
+
     - _Requerimientos: 2.1, 2.2, 2.4_
 
 - [ ] 4. Implementar sistema de campañas y necesidades

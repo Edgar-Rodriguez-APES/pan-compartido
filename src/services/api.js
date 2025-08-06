@@ -401,6 +401,86 @@ export const profileService = {
   }
 };
 
+// Servicios de productos
+export const productService = {
+  getAll: async (params = {}) => {
+    const response = await api.get('/products', { params });
+    return response.data;
+  },
+
+  getCategories: async () => {
+    const response = await api.get('/products/categories');
+    return response.data;
+  },
+
+  getPopular: async (limit = 10) => {
+    const response = await api.get('/products/popular', {
+      params: { limit }
+    });
+    return response.data;
+  },
+
+  getMostNeeded: async (limit = 10) => {
+    const response = await api.get('/products/most-needed', {
+      params: { limit }
+    });
+    return response.data;
+  },
+
+  search: async (searchTerm, params = {}) => {
+    const response = await api.get('/products/search', {
+      params: { q: searchTerm, ...params }
+    });
+    return response.data;
+  },
+
+  getByCategory: async (category, activeOnly = true) => {
+    const response = await api.get(`/products/category/${category}`, {
+      params: { activeOnly }
+    });
+    return response.data;
+  },
+
+  getRecommendations: async (campaignGoals) => {
+    const response = await api.post('/products/recommendations', {
+      campaignGoals
+    });
+    return response.data;
+  },
+
+  getById: async (id, includeStats = false) => {
+    const response = await api.get(`/products/${id}`, {
+      params: { includeStats }
+    });
+    return response.data;
+  },
+
+  create: async (data) => {
+    const response = await api.post('/products', data);
+    return response.data;
+  },
+
+  update: async (id, data) => {
+    const response = await api.put(`/products/${id}`, data);
+    return response.data;
+  },
+
+  toggleStatus: async (id, isActive) => {
+    const response = await api.patch(`/products/${id}/status`, { isActive });
+    return response.data;
+  },
+
+  syncWithCampaigns: async () => {
+    const response = await api.post('/products/sync-campaigns');
+    return response.data;
+  },
+
+  clearCache: async () => {
+    const response = await api.delete('/products/cache');
+    return response.data;
+  }
+};
+
 // Función helper para manejar errores de API
 export const handleApiError = (error) => {
   if (error.response) {
