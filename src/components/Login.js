@@ -1,15 +1,27 @@
 import React, { useState } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { LogIn, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import Register from './Register';
 
 const Login = ({ onSuccess }) => {
   const { login, isLoading, error, clearError } = useAuth();
+  const [showRegister, setShowRegister] = useState(false);
   const [formData, setFormData] = useState({
     tenantId: 'demo', // Tenant demo por defecto
     email: '',
     password: ''
   });
   const [showPassword, setShowPassword] = useState(false);
+
+  // Si está en modo registro, mostrar el componente Register
+  if (showRegister) {
+    return (
+      <Register 
+        onSuccess={onSuccess}
+        onSwitchToLogin={() => setShowRegister(false)}
+      />
+    );
+  }
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -147,7 +159,15 @@ const Login = ({ onSuccess }) => {
             </button>
           </div>
 
-          <div className="text-center">
+          <div className="text-center space-y-4">
+            <button
+              type="button"
+              onClick={() => setShowRegister(true)}
+              className="text-sm text-green-600 hover:text-green-500"
+            >
+              ¿No tienes cuenta? Regístrate aquí
+            </button>
+
             <div className="bg-blue-50 border border-blue-200 rounded-md p-4">
               <p className="text-sm text-blue-800 font-medium">Credenciales de prueba:</p>
               <p className="text-xs text-blue-600 mt-1">

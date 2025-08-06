@@ -1,8 +1,7 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const Joi = require('joi');
-const db = require('../config/database');
+const UserService = require('../services/UserService');
+const TenantService = require('../services/TenantService');
 const logger = require('../utils/logger');
 
 const router = express.Router();
@@ -31,76 +30,37 @@ router.post('/register', async (req, res, next) => {
       return next(error);
     }
 
-    const { tenantId, name, email, phone, password } = value;
+    const user = await UserService.registerUser(value);
+    const { token } = await UserService.authenticateUser(value.email, value.password, value.tenantId);
+    
+    // Obtener información del tenant
+    const tenant = await TenantService.getTenant(value.tenantId);
 
-    // Verificar que el tenant existe
-    const tenant = await db('tenants').where('id', tenantId).first();
-    if (!tenant) {
-      return res.status(404).json({
-        error: 'Parroquia no encontrada',
-        message: 'La parroquia especificada no existe'
-      });
-    }
-
-    // Verificar que el email no esté en uso en este tenant
-    const existingUser = await db('users')
-      .where('tenant_id', tenantId)
-      .where('email', email)
-      .first();
-
-    if (existingUser) {
+    res.status(201).json({
+      message: '¡Cuenta creada exitosamente!',
+      user: user.toJSON(),
+      token,
+      tenant: tenant.toJSON()
+    });
+  } catch (error) {
+    if (error.message === 'EMAIL_ALREADY_EXISTS') {
       return res.status(409).json({
         error: 'Email ya registrado',
         message: 'Ya existe una cuenta con este email en esta parroquia'
       });
     }
-
-    // Hash de la contraseña
-    const passwordHash = await bcrypt.hash(password, 12);
-
-    // Crear usuario
-    const [user] = await db('users')
-      .insert({
-        tenant_id: tenantId,
-        name,
-        email,
-        phone,
-        password_hash: passwordHash,
-        role: 'feligres'
-      })
-      .returning(['id', 'name', 'email', 'phone', 'role', 'tenant_id']);
-
-    // Generar JWT
-    const token = jwt.sign(
-      { userId: user.id, tenantId: user.tenant_id },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-    );
-
-    logger.info('Usuario registrado', {
-      userId: user.id,
-      email: user.email,
-      tenantId: user.tenant_id
-    });
-
-    res.status(201).json({
-      message: '¡Cuenta creada exitosamente!',
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        tenantId: user.tenant_id
-      },
-      token,
-      tenant: {
-        id: tenant.id,
-        name: tenant.name,
-        slug: tenant.slug
-      }
-    });
-  } catch (error) {
+    if (error.message === 'PHONE_ALREADY_EXISTS') {
+      return res.status(409).json({
+        error: 'Teléfono ya registrado',
+        message: 'Ya existe una cuenta con este teléfono en esta parroquia'
+      });
+    }
+    if (error.message === 'TENANT_NOT_FOUND') {
+      return res.status(404).json({
+        error: 'Parroquia no encontrada',
+        message: 'La parroquia especificada no existe'
+      });
+    }
     next(error);
   }
 });
@@ -116,76 +76,30 @@ router.post('/login', async (req, res, next) => {
 
     const { tenantId, email, password } = value;
 
-    // Buscar usuario
-    const user = await db('users')
-      .where('tenant_id', tenantId)
-      .where('email', email)
-      .first();
+    const { user, token } = await UserService.authenticateUser(email, password, tenantId);
+    
+    // Obtener información del tenant
+    const tenant = await TenantService.getTenant(tenantId);
 
-    if (!user) {
+    res.json({
+      message: '¡Bienvenido de vuelta!',
+      user: user.toJSON(),
+      token,
+      tenant: tenant.toJSON()
+    });
+  } catch (error) {
+    if (error.message === 'INVALID_CREDENTIALS') {
       return res.status(401).json({
         error: 'Credenciales inválidas',
         message: 'Email o contraseña incorrectos'
       });
     }
-
-    // Verificar contraseña
-    const isValidPassword = await bcrypt.compare(password, user.password_hash);
-    if (!isValidPassword) {
-      return res.status(401).json({
-        error: 'Credenciales inválidas',
-        message: 'Email o contraseña incorrectos'
-      });
-    }
-
-    // Verificar que el usuario esté activo
-    if (!user.is_active) {
+    if (error.message === 'USER_INACTIVE') {
       return res.status(403).json({
         error: 'Cuenta deshabilitada',
         message: 'Tu cuenta ha sido deshabilitada. Contacta al administrador.'
       });
     }
-
-    // Actualizar último login
-    await db('users')
-      .where('id', user.id)
-      .update({ last_login: new Date() });
-
-    // Generar JWT
-    const token = jwt.sign(
-      { userId: user.id, tenantId: user.tenant_id },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-    );
-
-    // Obtener información del tenant
-    const tenant = await db('tenants').where('id', user.tenant_id).first();
-
-    logger.info('Usuario logueado', {
-      userId: user.id,
-      email: user.email,
-      tenantId: user.tenant_id
-    });
-
-    res.json({
-      message: '¡Bienvenido de vuelta!',
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        tenantId: user.tenant_id
-      },
-      token,
-      tenant: {
-        id: tenant.id,
-        name: tenant.name,
-        slug: tenant.slug,
-        branding: tenant.branding
-      }
-    });
-  } catch (error) {
     next(error);
   }
 });
@@ -202,37 +116,16 @@ router.get('/verify', async (req, res, next) => {
     }
 
     const token = authHeader.substring(7);
+    const jwt = require('jsonwebtoken');
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    const user = await db('users')
-      .where('id', decoded.userId)
-      .first();
-
-    if (!user || !user.is_active) {
-      return res.status(401).json({
-        error: 'Token inválido',
-        message: 'El token no es válido o el usuario no existe'
-      });
-    }
-
-    const tenant = await db('tenants').where('id', user.tenant_id).first();
+    const user = await UserService.getUser(decoded.userId);
+    const tenant = await TenantService.getTenant(user.tenantId);
 
     res.json({
       valid: true,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        tenantId: user.tenant_id
-      },
-      tenant: {
-        id: tenant.id,
-        name: tenant.name,
-        slug: tenant.slug,
-        branding: tenant.branding
-      }
+      user: user.toJSON(),
+      tenant: tenant.toJSON()
     });
   } catch (error) {
     if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
@@ -240,6 +133,13 @@ router.get('/verify', async (req, res, next) => {
         valid: false,
         error: 'Token inválido',
         message: 'El token ha expirado o no es válido'
+      });
+    }
+    if (error.message === 'USER_NOT_FOUND' || error.message === 'USER_INACTIVE') {
+      return res.status(401).json({
+        valid: false,
+        error: 'Token inválido',
+        message: 'El token no es válido o el usuario no existe'
       });
     }
     next(error);

@@ -162,8 +162,64 @@ export const userService = {
     return response.data;
   },
 
+  changePassword: async (currentPassword, newPassword) => {
+    const response = await api.put('/users/password', {
+      currentPassword,
+      newPassword
+    });
+    return response.data;
+  },
+
+  verifyEmail: async (verificationToken) => {
+    const response = await api.post('/users/verify-email', {
+      verificationToken
+    });
+    return response.data;
+  },
+
+  verifyPhone: async (verificationCode) => {
+    const response = await api.post('/users/verify-phone', {
+      verificationCode
+    });
+    return response.data;
+  },
+
   getAll: async (params = {}) => {
     const response = await api.get('/users', { params });
+    return response.data;
+  },
+
+  search: async (searchTerm) => {
+    const response = await api.get('/users/search', {
+      params: { q: searchTerm }
+    });
+    return response.data;
+  },
+
+  getById: async (userId) => {
+    const response = await api.get(`/users/${userId}`);
+    return response.data;
+  },
+
+  update: async (userId, data) => {
+    const response = await api.put(`/users/${userId}`, data);
+    return response.data;
+  },
+
+  deactivate: async (userId) => {
+    const response = await api.delete(`/users/${userId}`);
+    return response.data;
+  },
+
+  reactivate: async (userId) => {
+    const response = await api.post(`/users/${userId}/reactivate`);
+    return response.data;
+  },
+
+  changeUserPassword: async (userId, newPassword) => {
+    const response = await api.put(`/users/${userId}/password`, {
+      newPassword
+    });
     return response.data;
   }
 };

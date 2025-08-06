@@ -33,6 +33,9 @@
 
 - [ ] 3. Crear sistema de gestión de usuarios y autenticación
   - [ ] 3.1 Implementar registro y autenticación de usuarios
+
+
+
     - Desarrollar sistema de registro para feligreses con validación de teléfono
     - Implementar autenticación OAuth 2.0 + JWT
     - Crear sistema de roles (feligrés, coordinador, párroco, admin)
