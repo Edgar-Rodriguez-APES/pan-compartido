@@ -79,6 +79,9 @@
   - [ ] 5.1 Desarrollar app móvil con React Native
 
 
+
+
+
     - Crear pantalla principal con necesidades actuales de la parroquia
     - Implementar flujo de donación simplificado (3 pasos máximo)
     - Desarrollar interfaz de compras personales integrada

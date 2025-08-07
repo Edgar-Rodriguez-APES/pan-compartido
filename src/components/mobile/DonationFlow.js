@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { campaignService, donationService, handleApiError } from '../../services/api';
-import { 
-  ArrowLeft, 
-  Heart, 
-  Plus, 
-  Minus, 
-  Check, 
+import {
+  ArrowLeft,
+  Heart,
+  Plus,
+  Minus,
+  Check,
   AlertCircle,
   Package,
   Users,
@@ -67,7 +67,7 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
   const handleSubmitDonation = async () => {
     try {
       setSubmitting(true);
-      
+
       const donationData = {
         campaignId: campaign.id,
         items: getSelectedItemsList(),
@@ -75,14 +75,14 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
       };
 
       await donationService.create(donationData);
-      
+
       setStep(3); // Success step
-      
+
       // Auto-complete after 3 seconds
       setTimeout(() => {
         if (onComplete) onComplete();
       }, 3000);
-      
+
     } catch (error) {
       setError(handleApiError(error));
     } finally {
@@ -176,22 +176,20 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
       <div className="flex items-center justify-between">
         {[1, 2, 3].map(stepNumber => (
           <div key={stepNumber} className="flex items-center">
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
-              stepNumber <= step 
-                ? 'bg-blue-600 text-white' 
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${stepNumber <= step
+                ? 'bg-blue-600 text-white'
                 : 'bg-gray-200 text-gray-600'
-            }`}>
+              }`}>
               {stepNumber < step ? <Check size={16} /> : stepNumber}
             </div>
             {stepNumber < 3 && (
-              <div className={`w-12 h-1 mx-2 ${
-                stepNumber < step ? 'bg-blue-600' : 'bg-gray-200'
-              }`}></div>
+              <div className={`w-12 h-1 mx-2 ${stepNumber < step ? 'bg-blue-600' : 'bg-gray-200'
+                }`}></div>
             )}
           </div>
         ))}
       </div>
-      
+
       <div className="mt-2 text-center">
         <p className="text-sm font-medium text-gray-900">
           {step === 1 && 'Selecciona qué donar'}
@@ -208,7 +206,7 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
       <div className="bg-white p-4 border-b border-gray-200">
         <h2 className="text-xl font-bold text-gray-900 mb-2">{campaign.title}</h2>
         <p className="text-gray-600 mb-3">{campaign.description}</p>
-        
+
         {/* Progress */}
         <div className="mb-3">
           <div className="flex justify-between text-sm mb-1">
@@ -218,10 +216,10 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
             </span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-2">
-            <div 
+            <div
               className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-              style={{ 
-                width: `${getProgressPercentage(campaign.raisedAmount, campaign.targetAmount)}%` 
+              style={{
+                width: `${getProgressPercentage(campaign.raisedAmount, campaign.targetAmount)}%`
               }}
             ></div>
           </div>
@@ -242,13 +240,13 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
       {/* Items Selection */}
       <div className="p-4">
         <h3 className="text-lg font-semibold text-gray-900 mb-4">¿Qué quieres donar?</h3>
-        
+
         <div className="space-y-4">
           {Object.entries(campaign.goals || {}).map(([itemName, goal]) => {
             const progress = campaign.currentProgress?.[itemName] || { received: 0 };
             const remaining = Math.max(0, goal.needed - progress.received);
             const selectedQty = selectedItems[itemName] || 0;
-            
+
             return (
               <div key={itemName} className="bg-white p-4 rounded-xl border">
                 <div className="flex items-center justify-between mb-3">
@@ -263,14 +261,14 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
                       {progress.received} / {goal.needed}
                     </p>
                     <div className="w-16 bg-gray-200 rounded-full h-1 mt-1">
-                      <div 
+                      <div
                         className="bg-green-500 h-1 rounded-full"
                         style={{ width: `${getProgressPercentage(progress.received, goal.needed)}%` }}
                       ></div>
                     </div>
                   </div>
                 </div>
-                
+
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <button
@@ -280,12 +278,12 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
                     >
                       <Minus size={16} />
                     </button>
-                    
+
                     <div className="text-center min-w-[3rem]">
                       <p className="text-lg font-bold text-gray-900">{selectedQty}</p>
                       <p className="text-xs text-gray-600">{goal.unit}</p>
                     </div>
-                    
+
                     <button
                       onClick={() => handleItemQuantityChange(itemName, selectedQty + 1)}
                       disabled={selectedQty >= remaining}
@@ -295,7 +293,7 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
                       <Plus size={16} className="text-white" />
                     </button>
                   </div>
-                  
+
                   {selectedQty > 0 && (
                     <div className="flex items-center gap-1 text-green-600">
                       <Check size={16} />
@@ -325,12 +323,12 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
 
   const renderStep2 = () => {
     const selectedItemsList = getSelectedItemsList();
-    
+
     return (
       <div className="flex-1 overflow-y-auto pb-20">
         <div className="p-4">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">Revisa tu donación</h3>
-          
+
           {/* Campaign Summary */}
           <div className="bg-white p-4 rounded-xl border mb-4">
             <h4 className="font-semibold text-gray-900 mb-2">{campaign.title}</h4>
@@ -367,7 +365,7 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
               <span className="font-semibold text-green-800">Tu impacto</span>
             </div>
             <p className="text-sm text-green-700">
-              Con esta donación ayudarás a alimentar familias necesitadas de nuestra comunidad. 
+              Con esta donación ayudarás a alimentar familias necesitadas de nuestra comunidad.
               ¡Cada contribución cuenta y hace la diferencia!
             </p>
           </div>
@@ -412,18 +410,18 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
         <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-6">
           <Check size={32} className="text-green-600" />
         </div>
-        
+
         <h2 className="text-2xl font-bold text-gray-900 mb-3">¡Donación Confirmada!</h2>
         <p className="text-gray-600 mb-6">
           Gracias por tu generosidad. Tu donación ha sido registrada y ayudará a familias necesitadas.
         </p>
-        
+
         <div className="bg-green-50 p-4 rounded-xl border border-green-200 mb-6">
           <p className="text-sm text-green-700">
             Recibirás una confirmación por WhatsApp con los detalles de tu donación.
           </p>
         </div>
-        
+
         <button
           onClick={onComplete}
           className="w-full py-3 px-4 rounded-xl font-semibold text-white transition-colors"
@@ -439,7 +437,7 @@ const DonationFlow = ({ campaignId, onBack, onComplete }) => {
     <div className="min-h-screen bg-gray-50 flex flex-col">
       {renderHeader()}
       {renderStepIndicator()}
-      
+
       {step === 1 && renderStep1()}
       {step === 2 && renderStep2()}
       {step === 3 && renderStep3()}

@@ -1,22 +1,42 @@
-# Pan Compartido - Product Overview
+---
+inclusion: always
+---
 
-Pan Compartido is a multi-parish donation management system that connects donors, consumers, and suppliers to facilitate the distribution of food markets to families in need.
+# Pan Compartido - Product & Architecture Guidelines
 
-## Core Features
+Pan Compartido is a multi-tenant donation management system for Catholic parishes facilitating food distribution to families in need.
 
-- **Multi-tenant architecture**: Each parish operates as an independent tenant with isolated data
-- **Donation management**: Campaign creation, donation tracking, and distribution coordination
-- **User roles**: Parish priests (admin), parishioners (donors/recipients), suppliers
-- **Payment integration**: Stripe and Wompi payment gateways
-- **Communication**: WhatsApp Bot integration for notifications
-- **Branding**: Customizable parish branding (colors, logos, contact info)
+## Architecture Patterns
 
-## Target Users
+- **Multi-tenant isolation**: All data operations must include tenant context. Use `req.tenant` middleware for tenant-scoped queries
+- **Service layer pattern**: Business logic resides in services (`/services`), controllers handle HTTP concerns only
+- **Repository pattern**: Database operations abstracted through models with Knex query builder
+- **Middleware chain**: Authentication → Tenant resolution → Route handlers
 
-- **Parish priests**: Manage campaigns, view donations, configure parish settings
-- **Parishioners**: Make donations, request assistance, view campaign progress
-- **Suppliers**: Participate in food supply auctions and bidding
+## User Roles & Permissions
 
-## Business Model
+- **Parish Admin (priest)**: Full tenant management, campaign oversight, branding configuration
+- **Parishioner**: Donation creation, campaign viewing, profile management
+- **Supplier**: Auction participation, product management (future feature)
 
-The platform facilitates charitable food distribution through a network of Catholic parishes, enabling efficient resource allocation and transparent donation management.
+## Code Conventions
+
+- **API Routes**: RESTful design with tenant-scoped endpoints (`/api/tenants/:tenantId/...`)
+- **Error Handling**: Use centralized error middleware, return consistent error format
+- **Validation**: Joi schemas for all request validation
+- **Database**: PostgreSQL with Knex migrations, Redis for caching and sessions
+- **Authentication**: JWT tokens with tenant context, bcrypt for password hashing
+
+## Key Business Rules
+
+- All campaigns belong to a specific tenant (parish)
+- Donations are immutable once processed
+- Payment processing through Stripe/Wompi with webhook validation
+- WhatsApp notifications for campaign updates and donation confirmations
+- Branding customization per tenant (colors, logos, contact information)
+
+## Mobile-First Design
+
+- Responsive design prioritizing mobile experience
+- Touch-friendly interfaces for donation flows
+- Offline-capable features where possible
