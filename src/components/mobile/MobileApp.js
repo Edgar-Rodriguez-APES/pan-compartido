@@ -1,46 +1,63 @@
 import React, { useState, useEffect } from 'react';
-import { useAuth } from '../../contexts/AuthContext';
-import { campaignService, productService, handleApiError } from '../../services/api';
 import { 
   Heart, 
   ShoppingCart, 
-  Home, 
   User, 
+  Home, 
   Bell,
-  Plus,
-  Minus,
-  Check,
-  AlertCircle,
-  Package,
   Target,
+  Users,
+  Calendar,
   TrendingUp,
-  Gift
+  Gift,
+  Phone,
+  Mail,
+  MapPin
 } from 'lucide-react';
+import api from '../../services/api';
+import DonationFlow from './DonationFlow';
+import ProductCatalog from './ProductCatalog';
+import ShoppingFlow from './ShoppingFlow';
+import UnifiedCart from './UnifiedCart';
+import OneButtonCheckout from './OneButtonCheckout';
+import { useCart } from '../../hooks/useCart';
 
-const MobileApp = () => {
-  const { user, tenant } = useAuth();
+const MobileApp = ({ tenantId, user }) => {
   const [activeTab, setActiveTab] = useState('home');
+  const [tenant, setTenant] = useState(null);
   const [activeCampaigns, setActiveCampaigns] = useState([]);
-  const [popularProducts, setPopularProducts] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+  const [userStats, setUserStats] = useState(null);
+  const [selectedCampaign, setSelectedCampaign] = useState(null);
+  const [showCheckout, setShowCheckout] = useState(false);
+  
+  // Use cart hook
+  const { totalItems, formatCurrency: cartFormatCurrency, quickAddDonation, quickAddPurchase } = useCart();
 
   useEffect(() => {
-    loadInitialData();
-  }, []);
+    loadMobileData();
+  }, [tenantId]);
 
-  const loadInitialData = async () => {
+  const loadMobileData = async () => {
     try {
       setLoading(true);
-      const [campaignsData, productsData] = await Promise.all([
-        campaignService.getActive(),
-        productService.getPopular(6)
+      const [tenantResponse, campaignsResponse, statsResponse] = await Promise.all([
+        api.get('/branding/frontend', {
+          headers: { 'X-Tenant-ID': tenantId }
+        }),
+        api.get('/campaigns/active', {
+          headers: { 'X-Tenant-ID': tenantId }
+        }),
+        user ? api.get('/profile/stats', {
+          headers: { 'X-Tenant-ID': tenantId }
+        }).catch(() => ({ data: { stats: null } })) : Promise.resolve({ data: { stats: null } })
       ]);
-      
-      setActiveCampaigns(campaignsData.campaigns || []);
-      setPopularProducts(productsData.products || []);
+
+      setTenant(tenantResponse.data);
+      setActiveCampaigns(campaignsResponse.data.campaigns || []);
+      setUserStats(statsResponse.data.stats);
     } catch (error) {
-      setError(handleApiError(error));
+      console.error('Error cargando datos móviles:', error);
     } finally {
       setLoading(false);
     }
@@ -54,321 +71,350 @@ const MobileApp = () => {
     }).format(amount);
   };
 
-  const getProgressPercentage = (current, target) => {
-    if (!target || target === 0) return 0;
-    return Math.min(100, (current / target) * 100);
+  const getProgressColor = (percentage) => {
+    if (percentage >= 100) return 'bg-green-500';
+    if (percentage >= 75) return 'bg-blue-500';
+    if (percentage >= 50) return 'bg-yellow-500';
+    return 'bg-red-500';
   };
-
-  const renderTabBar = () => (
-    <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-4 py-2 safe-area-bottom">
-      <div className="flex justify-around items-center">
-        {[
-          { id: 'home', icon: Home, label: 'Inicio' },
-          { id: 'donate', icon: Heart, label: 'Donar' },
-          { id: 'shop', icon: ShoppingCart, label: 'Comprar' },
-          { id: 'profile', icon: User, label: 'Perfil' }
-        ].map(tab => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.id;
-          
-          return (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className={`flex flex-col items-center py-2 px-3 rounded-lg transition-colors ${
-                isActive 
-                  ? 'text-blue-600 bg-blue-50' 
-                  : 'text-gray-500'
-              }`}
-            >
-              <Icon size={20} />
-              <span className="text-xs mt-1 font-medium">{tab.label}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-
-  const renderHeader = () => (
-    <div className="bg-white border-b border-gray-200 px-4 py-3 safe-area-top">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div 
-            className="w-8 h-8 rounded-full flex items-center justify-center"
-            style={{ backgroundColor: tenant?.branding?.colors?.primary || '#2563eb' }}
-          >
-            <Package className="w-4 h-4 text-white" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold text-gray-900">{tenant?.name || 'Pan Compartido'}</h1>
-            <p className="text-xs text-gray-600">¡Hola, {user?.name}!</p>
-          </div>
-        </div>
-        
-        <button className="relative p-2">
-          <Bell size={20} className="text-gray-600" />
-          <span className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full"></span>
-        </button>
-      </div>
-    </div>
-  );
 
   const renderHomeTab = () => (
     <div className="pb-20">
-      {/* Header */}
-      {renderHeader()}
-      
-      {/* Quick Stats */}
-      <div className="px-4 py-4 bg-gray-50">
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-white p-4 rounded-xl border">
-            <div className="flex items-center gap-2 mb-2">
-              <Heart className="w-5 h-5 text-green-600" />
-              <span className="text-sm font-medium text-gray-700">Mis Donaciones</span>
+      {/* Header with Parish Branding */}
+      <div 
+        className="px-4 py-6 text-white relative overflow-hidden"
+        style={{ backgroundColor: tenant?.colors?.primary || '#2563eb' }}
+      >
+        <div className="absolute inset-0 bg-black bg-opacity-10"></div>
+        <div className="relative z-10">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center">
+              {tenant?.logoUrl && (
+                <img 
+                  src={tenant.logoUrl} 
+                  alt={tenant.name}
+                  className="w-12 h-12 rounded-full bg-white p-1 mr-3"
+                />
+              )}
+              <div>
+                <h1 className="text-xl font-bold">{tenant?.name}</h1>
+                <p className="text-white text-opacity-90 text-sm">Pan Compartido</p>
+              </div>
             </div>
-            <p className="text-xl font-bold text-green-600">12</p>
-            <p className="text-xs text-gray-500">Este mes</p>
+            <Bell className="w-6 h-6" />
           </div>
-          
-          <div className="bg-white p-4 rounded-xl border">
-            <div className="flex items-center gap-2 mb-2">
-              <Target className="w-5 h-5 text-blue-600" />
-              <span className="text-sm font-medium text-gray-700">Familias Ayudadas</span>
+
+          {user && (
+            <div className="bg-white bg-opacity-20 rounded-lg p-3">
+              <p className="text-sm text-white text-opacity-90">¡Hola, {user.name}!</p>
+              <p className="text-xs text-white text-opacity-75">
+                Gracias por ser parte de nuestra comunidad
+              </p>
             </div>
-            <p className="text-xl font-bold text-blue-600">45</p>
-            <p className="text-xs text-gray-500">Total</p>
-          </div>
+          )}
         </div>
       </div>
+
+      {/* Quick Stats */}
+      {userStats && (
+        <div className="px-4 py-4 bg-gray-50">
+          <h3 className="text-sm font-medium text-gray-600 mb-3">Tu Impacto</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="bg-white rounded-lg p-3 text-center">
+              <div className="text-lg font-bold text-green-600">{userStats.donations}</div>
+              <div className="text-xs text-gray-600">Donaciones</div>
+            </div>
+            <div className="bg-white rounded-lg p-3 text-center">
+              <div className="text-lg font-bold text-blue-600">
+                {formatCurrency(userStats.totalDonated)}
+              </div>
+              <div className="text-xs text-gray-600">Total Donado</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Active Campaigns */}
       <div className="px-4 py-4">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-gray-900">Campañas Activas</h2>
-          <button className="text-blue-600 text-sm font-medium">Ver todas</button>
+          <h2 className="text-lg font-semibold text-gray-900">Necesidades Actuales</h2>
+          <span className="text-sm text-gray-500">{activeCampaigns.length} activas</span>
         </div>
-        
-        {loading ? (
-          <div className="space-y-3">
-            {[1, 2].map(i => (
-              <div key={i} className="bg-white p-4 rounded-xl border animate-pulse">
-                <div className="h-4 bg-gray-200 rounded mb-2"></div>
-                <div className="h-3 bg-gray-200 rounded w-3/4 mb-3"></div>
-                <div className="h-2 bg-gray-200 rounded"></div>
-              </div>
-            ))}
-          </div>
-        ) : activeCampaigns.length === 0 ? (
-          <div className="bg-white p-6 rounded-xl border text-center">
-            <Package className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-            <p className="text-gray-600">No hay campañas activas</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {activeCampaigns.slice(0, 3).map(campaign => (
-              <div key={campaign.id} className="bg-white p-4 rounded-xl border">
-                <h3 className="font-semibold text-gray-900 mb-2">{campaign.title}</h3>
-                <p className="text-sm text-gray-600 mb-3 line-clamp-2">{campaign.description}</p>
-                
-                {/* Progress */}
-                <div className="mb-3">
-                  <div className="flex justify-between text-sm mb-1">
-                    <span className="text-gray-600">Progreso</span>
-                    <span className="font-medium">
-                      {formatCurrency(campaign.raisedAmount || 0)} / {formatCurrency(campaign.targetAmount || 0)}
-                    </span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div 
-                      className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                      style={{ 
-                        width: `${getProgressPercentage(campaign.raisedAmount, campaign.targetAmount)}%` 
-                      }}
-                    ></div>
-                  </div>
-                </div>
-                
-                <button 
-                  className="w-full py-2 px-4 rounded-lg font-medium text-white transition-colors"
-                  style={{ backgroundColor: tenant?.branding?.colors?.primary || '#2563eb' }}
-                  onClick={() => setActiveTab('donate')}
-                >
-                  Donar Ahora
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
 
-      {/* Popular Products */}
-      <div className="px-4 py-4">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-bold text-gray-900">Productos Populares</h2>
-          <button className="text-blue-600 text-sm font-medium">Ver todos</button>
-        </div>
-        
-        <div className="grid grid-cols-2 gap-3">
-          {popularProducts.slice(0, 4).map(product => (
-            <div key={product.id} className="bg-white p-3 rounded-xl border">
-              <div className="w-full h-20 bg-gray-100 rounded-lg mb-2 flex items-center justify-center">
-                <Package className="w-8 h-8 text-gray-400" />
-              </div>
-              <h3 className="font-medium text-sm text-gray-900 mb-1">{product.name}</h3>
-              <p className="text-xs text-gray-600 mb-2">{product.categoryDisplayName}</p>
-              <p className="text-sm font-bold text-green-600">{product.formattedPrice}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-
-  const renderDonateTab = () => (
-    <div className="pb-20">
-      {renderHeader()}
-      
-      <div className="px-4 py-4">
-        <h2 className="text-xl font-bold text-gray-900 mb-4">Hacer Donación</h2>
-        
-        {activeCampaigns.length === 0 ? (
-          <div className="bg-white p-6 rounded-xl border text-center">
-            <Heart className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-            <p className="text-gray-600 mb-2">No hay campañas activas</p>
-            <p className="text-sm text-gray-500">Vuelve pronto para ver nuevas oportunidades de ayudar</p>
-          </div>
-        ) : (
+        {activeCampaigns.length > 0 ? (
           <div className="space-y-4">
             {activeCampaigns.map(campaign => (
-              <CampaignDonationCard 
-                key={campaign.id} 
-                campaign={campaign} 
-                tenant={tenant}
-              />
+              <div key={campaign.id} className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="p-4">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-gray-900 text-sm leading-tight">
+                        {campaign.title}
+                      </h3>
+                      <p className="text-xs text-gray-600 mt-1 line-clamp-2">
+                        {campaign.description}
+                      </p>
+                    </div>
+                    <div className="ml-3 text-right">
+                      <div className="text-xs text-gray-500">
+                        {campaign.daysRemaining} días
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Progress Bar */}
+                  <div className="mb-3">
+                    <div className="flex justify-between text-xs text-gray-600 mb-1">
+                      <span>Progreso</span>
+                      <span>{Math.round(campaign.completionPercentage)}%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div 
+                        className={`h-2 rounded-full transition-all duration-300 ${getProgressColor(campaign.completionPercentage)}`}
+                        style={{ width: `${Math.min(campaign.completionPercentage, 100)}%` }}
+                      ></div>
+                    </div>
+                  </div>
+
+                  {/* Campaign Stats */}
+                  <div className="grid grid-cols-2 gap-3 mb-4">
+                    <div className="text-center">
+                      <div className="text-sm font-semibold text-gray-900">
+                        {formatCurrency(campaign.raisedAmount)}
+                      </div>
+                      <div className="text-xs text-gray-500">Recaudado</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-sm font-semibold text-gray-900">
+                        {campaign.targetFamilies || 0}
+                      </div>
+                      <div className="text-xs text-gray-500">Familias</div>
+                    </div>
+                  </div>
+
+                  {/* Impact Message */}
+                  {campaign.impactMessage && (
+                    <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 mb-4">
+                      <p className="text-xs text-blue-800">{campaign.impactMessage}</p>
+                    </div>
+                  )}
+
+                  {/* Urgent Needs */}
+                  {campaign.urgentNeeds && campaign.urgentNeeds.length > 0 && (
+                    <div className="mb-4">
+                      <h4 className="text-xs font-medium text-orange-700 mb-2">Necesidades Urgentes:</h4>
+                      <div className="space-y-1">
+                        {campaign.urgentNeeds.slice(0, 3).map((need, index) => (
+                          <div key={index} className="flex justify-between items-center text-xs">
+                            <span className="text-gray-700">{need.productId}</span>
+                            <span className="text-orange-600 font-medium">
+                              Faltan {need.remaining} {need.unit}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Action Buttons */}
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={() => window.location.href = `/mobile/donate/${campaign.id}`}
+                      className="flex-1 bg-red-500 text-white text-sm font-medium py-2.5 px-4 rounded-lg flex items-center justify-center"
+                    >
+                      <Heart className="w-4 h-4 mr-2" />
+                      Donar
+                    </button>
+                    <button
+                      onClick={() => window.location.href = `/mobile/shop/${campaign.id}`}
+                      className="flex-1 bg-blue-500 text-white text-sm font-medium py-2.5 px-4 rounded-lg flex items-center justify-center"
+                    >
+                      <ShoppingCart className="w-4 h-4 mr-2" />
+                      Comprar
+                    </button>
+                  </div>
+                </div>
+              </div>
             ))}
           </div>
+        ) : (
+          <div className="text-center py-8">
+            <Target className="w-16 h-16 text-gray-300 mx-auto mb-3" />
+            <p className="text-gray-500 text-sm">No hay campañas activas</p>
+            <p className="text-gray-400 text-xs">Pronto habrá nuevas necesidades</p>
+          </div>
         )}
+      </div>
+
+      {/* Community Impact */}
+      <div className="px-4 py-4 bg-gray-50">
+        <h3 className="text-sm font-medium text-gray-600 mb-3">Impacto Comunitario</h3>
+        <div className="bg-white rounded-lg p-4">
+          <div className="grid grid-cols-3 gap-4 text-center">
+            <div>
+              <div className="text-lg font-bold text-green-600">150</div>
+              <div className="text-xs text-gray-600">Familias Ayudadas</div>
+            </div>
+            <div>
+              <div className="text-lg font-bold text-blue-600">89</div>
+              <div className="text-xs text-gray-600">Donantes Activos</div>
+            </div>
+            <div>
+              <div className="text-lg font-bold text-purple-600">12</div>
+              <div className="text-xs text-gray-600">Campañas Completadas</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
 
-  const renderShopTab = () => (
+  const renderCartTab = () => (
     <div className="pb-20">
-      {renderHeader()}
-      
       <div className="px-4 py-4">
-        <h2 className="text-xl font-bold text-gray-900 mb-4">Comprar Productos</h2>
-        
-        <div className="bg-blue-50 p-4 rounded-xl border border-blue-200 mb-4">
-          <div className="flex items-center gap-2 mb-2">
-            <TrendingUp className="w-5 h-5 text-blue-600" />
-            <span className="font-medium text-blue-800">Precios Mayoristas</span>
-          </div>
-          <p className="text-sm text-blue-700">
-            Aprovecha precios especiales comprando productos de alta calidad
-          </p>
-        </div>
-        
-        <div className="grid grid-cols-2 gap-3">
-          {popularProducts.map(product => (
-            <ProductCard 
-              key={product.id} 
-              product={product} 
-              tenant={tenant}
-            />
-          ))}
-        </div>
+        <h2 className="text-xl font-bold text-gray-900 mb-4">Mi Carrito</h2>
+        <OneButtonCheckout 
+          tenantId={tenantId}
+          user={user}
+          onSuccess={(result) => {
+            console.log('Checkout successful:', result);
+            // Show success message or redirect
+            alert('¡Orden procesada exitosamente!');
+          }}
+          onError={(error) => {
+            console.error('Checkout error:', error);
+            alert(`Error: ${error}`);
+          }}
+        />
       </div>
     </div>
   );
 
   const renderProfileTab = () => (
     <div className="pb-20">
-      {renderHeader()}
-      
-      <div className="px-4 py-4">
-        {/* User Info */}
-        <div className="bg-white p-4 rounded-xl border mb-4">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
-              <User className="w-6 h-6 text-blue-600" />
-            </div>
-            <div>
-              <h2 className="text-lg font-bold text-gray-900">{user?.name}</h2>
-              <p className="text-sm text-gray-600">{user?.email}</p>
-            </div>
+      {/* Profile Header */}
+      <div className="px-4 py-6 bg-white border-b">
+        <div className="flex items-center">
+          <div className="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center">
+            <User className="w-8 h-8 text-gray-500" />
           </div>
-          
-          <div className="grid grid-cols-2 gap-4">
-            <div className="text-center p-3 bg-green-50 rounded-lg">
-              <Heart className="w-6 h-6 text-green-600 mx-auto mb-1" />
-              <p className="text-sm font-medium text-green-800">Donante</p>
-              <p className="text-xs text-green-600">Nivel: Solidario</p>
-            </div>
-            
-            <div className="text-center p-3 bg-blue-50 rounded-lg">
-              <ShoppingCart className="w-6 h-6 text-blue-600 mx-auto mb-1" />
-              <p className="text-sm font-medium text-blue-800">Consumidor</p>
-              <p className="text-xs text-blue-600">Nivel: Regular</p>
-            </div>
+          <div className="ml-4">
+            <h2 className="text-lg font-semibold text-gray-900">
+              {user ? user.name : 'Invitado'}
+            </h2>
+            <p className="text-sm text-gray-600">
+              {user ? user.email : 'Inicia sesión para ver tu perfil'}
+            </p>
           </div>
         </div>
+      </div>
 
-        {/* Quick Actions */}
-        <div className="space-y-3">
-          <button className="w-full bg-white p-4 rounded-xl border flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Gift className="w-5 h-5 text-gray-600" />
-              <span className="font-medium text-gray-900">Mis Donaciones</span>
+      {user ? (
+        <>
+          {/* User Stats */}
+          {userStats && (
+            <div className="px-4 py-4">
+              <h3 className="text-sm font-medium text-gray-600 mb-3">Mis Estadísticas</h3>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-white rounded-lg p-4 border">
+                  <div className="text-2xl font-bold text-green-600">{userStats.donations}</div>
+                  <div className="text-sm text-gray-600">Donaciones Realizadas</div>
+                </div>
+                <div className="bg-white rounded-lg p-4 border">
+                  <div className="text-2xl font-bold text-blue-600">
+                    {formatCurrency(userStats.totalDonated)}
+                  </div>
+                  <div className="text-sm text-gray-600">Total Donado</div>
+                </div>
+                <div className="bg-white rounded-lg p-4 border">
+                  <div className="text-2xl font-bold text-purple-600">{userStats.purchases}</div>
+                  <div className="text-sm text-gray-600">Compras Realizadas</div>
+                </div>
+                <div className="bg-white rounded-lg p-4 border">
+                  <div className="text-2xl font-bold text-orange-600">
+                    {formatCurrency(userStats.totalPurchased)}
+                  </div>
+                  <div className="text-sm text-gray-600">Total Comprado</div>
+                </div>
+              </div>
             </div>
-            <span className="text-gray-400">›</span>
-          </button>
-          
-          <button className="w-full bg-white p-4 rounded-xl border flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Package className="w-5 h-5 text-gray-600" />
-              <span className="font-medium text-gray-900">Mis Compras</span>
+          )}
+
+          {/* Profile Actions */}
+          <div className="px-4 py-4">
+            <div className="space-y-2">
+              <button className="w-full bg-white border rounded-lg p-4 flex items-center justify-between">
+                <div className="flex items-center">
+                  <Gift className="w-5 h-5 text-gray-500 mr-3" />
+                  <span className="text-sm font-medium">Mis Donaciones</span>
+                </div>
+                <span className="text-gray-400">→</span>
+              </button>
+              
+              <button className="w-full bg-white border rounded-lg p-4 flex items-center justify-between">
+                <div className="flex items-center">
+                  <ShoppingCart className="w-5 h-5 text-gray-500 mr-3" />
+                  <span className="text-sm font-medium">Mis Compras</span>
+                </div>
+                <span className="text-gray-400">→</span>
+              </button>
+              
+              <button className="w-full bg-white border rounded-lg p-4 flex items-center justify-between">
+                <div className="flex items-center">
+                  <User className="w-5 h-5 text-gray-500 mr-3" />
+                  <span className="text-sm font-medium">Editar Perfil</span>
+                </div>
+                <span className="text-gray-400">→</span>
+              </button>
             </div>
-            <span className="text-gray-400">›</span>
+          </div>
+        </>
+      ) : (
+        <div className="px-4 py-8 text-center">
+          <User className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+          <h3 className="text-lg font-medium text-gray-900 mb-2">Inicia Sesión</h3>
+          <p className="text-sm text-gray-600 mb-6">
+            Accede a tu cuenta para ver tu historial de donaciones y compras
+          </p>
+          <button className="w-full bg-blue-600 text-white py-3 rounded-lg font-medium">
+            Iniciar Sesión
           </button>
-          
-          <button className="w-full bg-white p-4 rounded-xl border flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <Bell className="w-5 h-5 text-gray-600" />
-              <span className="font-medium text-gray-900">Notificaciones</span>
+        </div>
+      )}
+
+      {/* Parish Contact */}
+      <div className="px-4 py-4 bg-gray-50">
+        <h3 className="text-sm font-medium text-gray-600 mb-3">Contacto</h3>
+        <div className="bg-white rounded-lg p-4 space-y-3">
+          {tenant?.contactInfo?.phone && (
+            <div className="flex items-center">
+              <Phone className="w-4 h-4 text-gray-500 mr-3" />
+              <span className="text-sm text-gray-700">{tenant.contactInfo.phone}</span>
             </div>
-            <span className="text-gray-400">›</span>
-          </button>
+          )}
+          {tenant?.contactInfo?.email && (
+            <div className="flex items-center">
+              <Mail className="w-4 h-4 text-gray-500 mr-3" />
+              <span className="text-sm text-gray-700">{tenant.contactInfo.email}</span>
+            </div>
+          )}
+          {tenant?.contactInfo?.address && (
+            <div className="flex items-center">
+              <MapPin className="w-4 h-4 text-gray-500 mr-3" />
+              <span className="text-sm text-gray-700">{tenant.contactInfo.address}</span>
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 
-  if (loading && activeCampaigns.length === 0) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
           <p className="text-gray-600">Cargando...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
-        <div className="text-center">
-          <AlertCircle className="w-12 h-12 text-red-500 mx-auto mb-4" />
-          <h3 className="text-lg font-medium text-gray-900 mb-2">Error</h3>
-          <p className="text-gray-600 mb-4">{error}</p>
-          <button
-            onClick={loadInitialData}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg"
-          >
-            Reintentar
-          </button>
         </div>
       </div>
     );
@@ -376,173 +422,58 @@ const MobileApp = () => {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      {activeTab === 'home' && renderHomeTab()}
-      {activeTab === 'donate' && renderDonateTab()}
-      {activeTab === 'shop' && renderShopTab()}
-      {activeTab === 'profile' && renderProfileTab()}
-      
-      {renderTabBar()}
-    </div>
-  );
-};
-
-// Componente para tarjeta de donación de campaña
-const CampaignDonationCard = ({ campaign, tenant }) => {
-  const [selectedItems, setSelectedItems] = useState({});
-  const [showDonationForm, setShowDonationForm] = useState(false);
-
-  const handleItemQuantityChange = (itemName, quantity) => {
-    setSelectedItems(prev => ({
-      ...prev,
-      [itemName]: Math.max(0, quantity)
-    }));
-  };
-
-  const getTotalSelectedItems = () => {
-    return Object.values(selectedItems).reduce((sum, qty) => sum + qty, 0);
-  };
-
-  if (showDonationForm) {
-    return (
-      <div className="bg-white p-4 rounded-xl border">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-semibold text-gray-900">{campaign.title}</h3>
-          <button 
-            onClick={() => setShowDonationForm(false)}
-            className="text-gray-500"
-          >
-            ✕
-          </button>
-        </div>
-
-        <div className="space-y-3 mb-4">
-          {Object.entries(campaign.goals || {}).map(([itemName, goal]) => {
-            const progress = campaign.currentProgress?.[itemName] || { received: 0 };
-            const remaining = Math.max(0, goal.needed - progress.received);
-            
-            return (
-              <div key={itemName} className="border rounded-lg p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-medium capitalize">{itemName}</span>
-                  <span className="text-sm text-gray-600">
-                    Faltan: {remaining} {goal.unit}
-                  </span>
-                </div>
-                
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => handleItemQuantityChange(itemName, (selectedItems[itemName] || 0) - 1)}
-                    className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center"
-                  >
-                    <Minus size={16} />
-                  </button>
-                  
-                  <span className="font-medium min-w-[2rem] text-center">
-                    {selectedItems[itemName] || 0}
-                  </span>
-                  
-                  <button
-                    onClick={() => handleItemQuantityChange(itemName, (selectedItems[itemName] || 0) + 1)}
-                    className="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center"
-                  >
-                    <Plus size={16} />
-                  </button>
-                  
-                  <span className="text-sm text-gray-600">{goal.unit}</span>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        <button
-          disabled={getTotalSelectedItems() === 0}
-          className="w-full py-3 px-4 rounded-lg font-medium text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ backgroundColor: tenant?.branding?.colors?.primary || '#2563eb' }}
-        >
-          Confirmar Donación ({getTotalSelectedItems()} items)
-        </button>
+      {/* Main Content */}
+      <div className="relative">
+        {activeTab === 'home' && renderHomeTab()}
+        {activeTab === 'cart' && renderCartTab()}
+        {activeTab === 'profile' && renderProfileTab()}
       </div>
-    );
-  }
 
-  return (
-    <div className="bg-white p-4 rounded-xl border">
-      <h3 className="font-semibold text-gray-900 mb-2">{campaign.title}</h3>
-      <p className="text-sm text-gray-600 mb-3">{campaign.description}</p>
-      
-      {/* Necesidades */}
-      <div className="mb-4">
-        <h4 className="text-sm font-medium text-gray-700 mb-2">Necesidades:</h4>
-        <div className="space-y-2">
-          {Object.entries(campaign.goals || {}).slice(0, 3).map(([itemName, goal]) => {
-            const progress = campaign.currentProgress?.[itemName] || { received: 0 };
-            const remaining = Math.max(0, goal.needed - progress.received);
-            
-            return (
-              <div key={itemName} className="flex justify-between text-sm">
-                <span className="capitalize">{itemName}</span>
-                <span className="text-gray-600">
-                  {remaining} {goal.unit} restantes
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      
-      <button
-        onClick={() => setShowDonationForm(true)}
-        className="w-full py-2 px-4 rounded-lg font-medium text-white transition-colors"
-        style={{ backgroundColor: tenant?.branding?.colors?.primary || '#2563eb' }}
-      >
-        Seleccionar Donación
-      </button>
-    </div>
-  );
-};
-
-// Componente para tarjeta de producto
-const ProductCard = ({ product, tenant }) => {
-  const [quantity, setQuantity] = useState(0);
-
-  return (
-    <div className="bg-white p-3 rounded-xl border">
-      <div className="w-full h-20 bg-gray-100 rounded-lg mb-2 flex items-center justify-center">
-        <Package className="w-8 h-8 text-gray-400" />
-      </div>
-      
-      <h3 className="font-medium text-sm text-gray-900 mb-1">{product.name}</h3>
-      <p className="text-xs text-gray-600 mb-2">{product.categoryDisplayName}</p>
-      <p className="text-sm font-bold text-green-600 mb-3">{product.formattedPrice}</p>
-      
-      {quantity === 0 ? (
-        <button
-          onClick={() => setQuantity(1)}
-          className="w-full py-2 px-3 rounded-lg text-sm font-medium text-white transition-colors"
-          style={{ backgroundColor: tenant?.branding?.colors?.secondary || '#10b981' }}
-        >
-          Agregar
-        </button>
-      ) : (
-        <div className="flex items-center justify-between">
+      {/* Bottom Navigation */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-4 py-2">
+        <div className="flex justify-around">
           <button
-            onClick={() => setQuantity(Math.max(0, quantity - 1))}
-            className="w-6 h-6 rounded-full bg-gray-100 flex items-center justify-center"
+            onClick={() => setActiveTab('home')}
+            className={`flex flex-col items-center py-2 px-3 rounded-lg ${
+              activeTab === 'home' 
+                ? 'text-blue-600 bg-blue-50' 
+                : 'text-gray-500'
+            }`}
           >
-            <Minus size={12} />
+            <Home className="w-5 h-5 mb-1" />
+            <span className="text-xs font-medium">Inicio</span>
           </button>
           
-          <span className="font-medium">{quantity}</span>
+          <button
+            onClick={() => setActiveTab('cart')}
+            className={`flex flex-col items-center py-2 px-3 rounded-lg relative ${
+              activeTab === 'cart' 
+                ? 'text-blue-600 bg-blue-50' 
+                : 'text-gray-500'
+            }`}
+          >
+            <ShoppingCart className="w-5 h-5 mb-1" />
+            <span className="text-xs font-medium">Carrito</span>
+            {totalItems > 0 && (
+              <span className="absolute -top-1 -right-1 w-5 h-5 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
+                {totalItems > 99 ? '99+' : totalItems}
+              </span>
+            )}
+          </button>
           
           <button
-            onClick={() => setQuantity(quantity + 1)}
-            className="w-6 h-6 rounded-full bg-gray-100 flex items-center justify-center"
+            onClick={() => setActiveTab('profile')}
+            className={`flex flex-col items-center py-2 px-3 rounded-lg ${
+              activeTab === 'profile' 
+                ? 'text-blue-600 bg-blue-50' 
+                : 'text-gray-500'
+            }`}
           >
-            <Plus size={12} />
+            <User className="w-5 h-5 mb-1" />
+            <span className="text-xs font-medium">Perfil</span>
           </button>
         </div>
-      )}
+      </div>
     </div>
   );
 };

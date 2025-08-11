@@ -1,244 +1,507 @@
 const express = require('express');
 const Joi = require('joi');
+const multer = require('multer');
 const BrandingService = require('../services/BrandingService');
-const { requireRole } = require('../middleware/authMiddleware');
+const authMiddleware = require('../middleware/authMiddleware');
 const logger = require('../utils/logger');
 
 const router = express.Router();
 
+// Configurar multer para subida de archivos
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 2 * 1024 * 1024 // 2MB
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/svg+xml', 'image/webp'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Tipo de archivo no permitido. Solo se permiten imágenes JPEG, PNG, SVG y WebP.'));
+    }
+  }
+});
+
 // Esquemas de validación
 const brandingUpdateSchema = Joi.object({
-  branding: Joi.object({
-    colors: Joi.object({
-      primary: Joi.string().pattern(/^#[0-9A-Fa-f]{6}$/).optional(),
-      secondary: Joi.string().pattern(/^#[0-9A-Fa-f]{6}$/).optional(),
-      accent: Joi.string().pattern(/^#[0-9A-Fa-f]{6}$/).optional(),
-      background: Joi.string().pattern(/^#[0-9A-Fa-f]{6}$/).optional(),
-      text: Joi.string().pattern(/^#[0-9A-Fa-f]{6}$/).optional()
-    }).optional(),
-    fonts: Joi.object({
-      primary: Joi.string().max(100).optional(),
-      secondary: Joi.string().max(100).optional()
-    }).optional(),
-    customCss: Joi.string().max(5000).optional()
-  }).optional(),
-  contact: Joi.object({
-    phone: Joi.string().max(20).optional(),
-    email: Joi.string().email().optional(),
-    address: Joi.string().max(200).optional(),
-    website: Joi.string().uri().optional(),
-    socialMedia: Joi.object({
-      facebook: Joi.string().uri().optional().allow(''),
-      instagram: Joi.string().uri().optional().allow(''),
-      twitter: Joi.string().uri().optional().allow(''),
-      whatsapp: Joi.string().max(20).optional().allow('')
-    }).optional()
-  }).optional(),
-  settings: Joi.object({
-    campaignFrequency: Joi.string().valid('weekly', 'biweekly', 'monthly').optional(),
-    minOrderAmount: Joi.number().positive().optional(),
-    platformFeePercentage: Joi.number().min(0).max(20).optional(),
-    allowPublicDonations: Joi.boolean().optional(),
-    requirePhoneVerification: Joi.boolean().optional(),
-    enableWhatsAppNotifications: Joi.boolean().optional(),
-    enableEmailNotifications: Joi.boolean().optional()
-  }).optional(),
-  logoUrl: Joi.string().uri().optional()
+  primaryColor: Joi.string().pattern(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/).optional(),
+  secondaryColor: Joi.string().pattern(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/).optional(),
+  accentColor: Joi.string().pattern(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/).optional(),
+  backgroundColor: Joi.string().pattern(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/).optional(),
+  textColor: Joi.string().pattern(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/).optional(),
+  fontFamily: Joi.string().max(100).optional(),
+  organizationName: Joi.string().max(100).optional(),
+  tagline: Joi.string().max(200).optional(),
+  customCss: Joi.string().max(5000).optional(),
+  emailSignature: Joi.string().max(1000).optional(),
+  whatsappFooter: Joi.string().max(200).optional()
 });
 
-const templateUpdateSchema = Joi.object({
-  platform: Joi.string().valid('whatsapp', 'email', 'social').required(),
-  templateType: Joi.string().required(),
-  content: Joi.alternatives().try(
-    Joi.string().max(1000),
-    Joi.object()
-  ).required()
+const contactInfoSchema = Joi.object({
+  phone: Joi.string().max(20).optional(),
+  email: Joi.string().email().optional(),
+  address: Joi.string().max(300).optional(),
+  website: Joi.string().uri().optional(),
+  socialMedia: Joi.object({
+    facebook: Joi.string().max(100).optional(),
+    instagram: Joi.string().max(100).optional(),
+    twitter: Joi.string().max(100).optional(),
+    youtube: Joi.string().max(100).optional()
+  }).optional()
 });
 
-// Obtener configuración completa de branding
-router.get('/', async (req, res, next) => {
+/**
+ * Get complete branding configuration
+ */
+router.get('/config', authMiddleware, async (req, res) => {
   try {
-    const config = await BrandingService.getBrandingConfig(req.tenantId);
-    res.json(config);
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Obtener configuración pública de branding (sin autenticación)
-router.get('/public', async (req, res, next) => {
-  try {
-    const config = await BrandingService.getPublicBrandingConfig(req.tenantId);
-    res.json(config);
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Actualizar configuración de branding (solo párrocos y admins)
-router.put('/', requireRole(['parroco', 'admin']), async (req, res, next) => {
-  try {
-    const { error, value } = brandingUpdateSchema.validate(req.body);
-    if (error) {
-      error.isJoi = true;
-      return next(error);
+    const tenantId = req.tenant.id;
+    
+    // Check permissions
+    if (!req.user || !['priest', 'admin', 'coordinator'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'Insufficient permissions to view branding configuration'
+      });
     }
 
-    // Validar configuración adicional
-    const validationErrors = BrandingService.validateBrandingConfig(value);
-    if (validationErrors.length > 0) {
+    const brandingConfig = await BrandingService.getBrandingConfig(tenantId);
+    
+    res.json({
+      success: true,
+      branding: brandingConfig
+    });
+
+  } catch (error) {
+    logger.error('Error getting branding config:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to get branding configuration'
+    });
+  }
+});
+
+/**
+ * Get public branding (no authentication required)
+ */
+router.get('/public/:tenantId', async (req, res) => {
+  try {
+    const tenantId = parseInt(req.params.tenantId);
+    
+    if (!tenantId || isNaN(tenantId)) {
       return res.status(400).json({
-        error: 'Configuración inválida',
-        message: 'Hay errores en la configuración proporcionada',
-        details: validationErrors
+        error: 'Invalid tenant ID'
+      });
+    }
+
+    const publicBranding = await BrandingService.getPublicBranding(tenantId);
+    
+    res.json({
+      success: true,
+      branding: publicBranding
+    });
+
+  } catch (error) {
+    logger.error('Error getting public branding:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to get public branding'
+    });
+  }
+});
+
+/**
+ * Get CSS variables for frontend
+ */
+router.get('/css/:tenantId', async (req, res) => {
+  try {
+    const tenantId = parseInt(req.params.tenantId);
+    
+    if (!tenantId || isNaN(tenantId)) {
+      return res.status(400).json({
+        error: 'Invalid tenant ID'
+      });
+    }
+
+    const cssVariables = await BrandingService.generateCssVariables(tenantId);
+    
+    res.setHeader('Content-Type', 'text/css');
+    res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
+    res.send(cssVariables);
+
+  } catch (error) {
+    logger.error('Error generating CSS variables:', error);
+    res.status(500).send('/* Error generating CSS variables */');
+  }
+});
+
+/**
+ * Update branding configuration
+ */
+router.put('/config', authMiddleware, async (req, res) => {
+  try {
+    const tenantId = req.tenant.id;
+    
+    // Check permissions (priest or admin only)
+    if (!req.user || !['priest', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'Only priests and administrators can update branding configuration'
+      });
+    }
+
+    const { error, value } = brandingUpdateSchema.validate(req.body);
+    if (error) {
+      return res.status(400).json({
+        error: 'Validation error',
+        details: error.details.map(d => d.message)
       });
     }
 
     const updatedConfig = await BrandingService.updateBrandingConfig(
-      req.tenantId,
+      tenantId,
       value,
       req.user
     );
 
     res.json({
-      message: 'Configuración de branding actualizada exitosamente',
-      config: updatedConfig
+      success: true,
+      message: 'Branding configuration updated successfully',
+      branding: updatedConfig
     });
+
   } catch (error) {
-    next(error);
+    logger.error('Error updating branding config:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to update branding configuration'
+    });
   }
 });
 
-// Generar CSS personalizado
-router.get('/css', async (req, res, next) => {
+/**
+ * Update contact information
+ */
+router.put('/contact', authMiddleware, async (req, res) => {
   try {
-    const css = await BrandingService.generateCustomCSS(req.tenantId);
+    const tenantId = req.tenant.id;
     
-    res.setHeader('Content-Type', 'text/css');
-    res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache por 1 hora
-    res.send(css);
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Obtener templates de mensajes
-router.get('/templates', async (req, res, next) => {
-  try {
-    const templates = await BrandingService.getMessageTemplates(req.tenantId);
-    res.json(templates);
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Actualizar template de mensaje específico (solo párrocos y admins)
-router.put('/templates', requireRole(['parroco', 'admin']), async (req, res, next) => {
-  try {
-    const { error, value } = templateUpdateSchema.validate(req.body);
-    if (error) {
-      error.isJoi = true;
-      return next(error);
+    // Check permissions
+    if (!req.user || !['priest', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'Only priests and administrators can update contact information'
+      });
     }
 
-    const updatedTemplates = await BrandingService.customizeMessageTemplate(
-      req.tenantId,
-      value.platform,
-      value.templateType,
-      value.content,
+    const { error, value } = contactInfoSchema.validate(req.body);
+    if (error) {
+      return res.status(400).json({
+        error: 'Validation error',
+        details: error.details.map(d => d.message)
+      });
+    }
+
+    const updatedBranding = await BrandingService.updateContactInfo(
+      tenantId,
+      value,
       req.user
     );
 
     res.json({
-      message: 'Template actualizado exitosamente',
-      templates: updatedTemplates
+      success: true,
+      message: 'Contact information updated successfully',
+      contactInfo: updatedBranding.contactInfo
     });
+
   } catch (error) {
-    next(error);
+    logger.error('Error updating contact info:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to update contact information'
+    });
   }
 });
 
-// Previsualizar mensaje con datos de ejemplo
-router.post('/templates/preview', requireRole(['parroco', 'admin']), async (req, res, next) => {
+/**
+ * Upload logo
+ */
+router.post('/logo', authMiddleware, upload.single('logo'), async (req, res) => {
   try {
-    const { platform, templateType, data } = req.body;
+    const tenantId = req.tenant.id;
+    
+    // Check permissions
+    if (!req.user || !['priest', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'Only priests and administrators can upload logos'
+      });
+    }
 
-    if (!platform || !templateType) {
+    if (!req.file) {
       return res.status(400).json({
-        error: 'Parámetros requeridos',
-        message: 'Se requieren platform y templateType'
+        error: 'Logo file is required'
       });
     }
 
-    const templates = await BrandingService.getMessageTemplates(req.tenantId);
-    let template = templates[platform]?.[templateType];
-
-    if (!template) {
-      return res.status(404).json({
-        error: 'Template no encontrado',
-        message: `No se encontró el template ${templateType} para ${platform}`
-      });
-    }
-
-    // Datos de ejemplo si no se proporcionan
-    const sampleData = {
-      name: 'María González',
-      items: 'Arroz (5kg), Aceite (2L)',
-      families: '15',
-      needs: '• Arroz: 25kg\n• Aceite: 15L\n• Atún: 50 latas',
-      progress: '75',
-      date: new Date().toLocaleDateString('es-CO'),
-      value: '$45.000',
-      donations: '23',
-      donors: '18',
-      totalDonations: '45',
-      ...data
-    };
-
-    // Reemplazar placeholders
-    if (typeof template === 'string') {
-      Object.keys(sampleData).forEach(key => {
-        const regex = new RegExp(`{${key}}`, 'g');
-        template = template.replace(regex, sampleData[key]);
-      });
-    } else if (typeof template === 'object') {
-      template = JSON.parse(JSON.stringify(template));
-      const replaceInObject = (obj) => {
-        Object.keys(obj).forEach(key => {
-          if (typeof obj[key] === 'string') {
-            Object.keys(sampleData).forEach(dataKey => {
-              const regex = new RegExp(`{${dataKey}}`, 'g');
-              obj[key] = obj[key].replace(regex, sampleData[dataKey]);
-            });
-          } else if (typeof obj[key] === 'object') {
-            replaceInObject(obj[key]);
-          }
-        });
-      };
-      replaceInObject(template);
-    }
+    const result = await BrandingService.uploadBrandingImage(
+      tenantId,
+      req.file,
+      'logo',
+      req.user
+    );
 
     res.json({
-      platform,
-      templateType,
-      preview: template,
-      sampleData
+      success: true,
+      message: 'Logo uploaded successfully',
+      ...result
     });
+
   } catch (error) {
-    next(error);
+    logger.error('Error uploading logo:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to upload logo'
+    });
   }
 });
 
-// Limpiar cache de branding (solo admins)
-router.delete('/cache', requireRole(['admin']), async (req, res, next) => {
+/**
+ * Upload favicon
+ */
+router.post('/favicon', authMiddleware, upload.single('favicon'), async (req, res) => {
   try {
-    await BrandingService.clearBrandingCache(req.tenantId);
+    const tenantId = req.tenant.id;
+    
+    // Check permissions
+    if (!req.user || !['priest', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'Only priests and administrators can upload favicons'
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({
+        error: 'Favicon file is required'
+      });
+    }
+
+    const result = await BrandingService.uploadBrandingImage(
+      tenantId,
+      req.file,
+      'favicon',
+      req.user
+    );
+
+    res.json({
+      success: true,
+      message: 'Favicon uploaded successfully',
+      ...result
+    });
+
+  } catch (error) {
+    logger.error('Error uploading favicon:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to upload favicon'
+    });
+  }
+});
+
+/**
+ * Delete logo
+ */
+router.delete('/logo', authMiddleware, async (req, res) => {
+  try {
+    const tenantId = req.tenant.id;
+    
+    // Check permissions
+    if (!req.user || !['priest', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'Only priests and administrators can delete logos'
+      });
+    }
+
+    await BrandingService.deleteBrandingImage(tenantId, 'logo', req.user);
+
+    res.json({
+      success: true,
+      message: 'Logo deleted successfully'
+    });
+
+  } catch (error) {
+    logger.error('Error deleting logo:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to delete logo'
+    });
+  }
+});
+
+/**
+ * Delete favicon
+ */
+router.delete('/favicon', authMiddleware, async (req, res) => {
+  try {
+    const tenantId = req.tenant.id;
+    
+    // Check permissions
+    if (!req.user || !['priest', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'Only priests and administrators can delete favicons'
+      });
+    }
+
+    await BrandingService.deleteBrandingImage(tenantId, 'favicon', req.user);
+
+    res.json({
+      success: true,
+      message: 'Favicon deleted successfully'
+    });
+
+  } catch (error) {
+    logger.error('Error deleting favicon:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to delete favicon'
+    });
+  }
+});
+
+/**
+ * Get contact information
+ */
+router.get('/contact', authMiddleware, async (req, res) => {
+  try {
+    const tenantId = req.tenant.id;
+    
+    const contactInfo = await BrandingService.getContactInfo(tenantId);
     
     res.json({
-      message: 'Cache de branding limpiado exitosamente'
+      success: true,
+      contactInfo
     });
+
   } catch (error) {
-    next(error);
+    logger.error('Error getting contact info:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to get contact information'
+    });
+  }
+});
+
+/**
+ * Get branding statistics
+ */
+router.get('/stats', authMiddleware, async (req, res) => {
+  try {
+    const tenantId = req.tenant.id;
+    
+    // Check permissions
+    if (!req.user || !['priest', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'Insufficient permissions to view branding statistics'
+      });
+    }
+
+    const stats = await BrandingService.getBrandingStats(tenantId);
+    
+    res.json({
+      success: true,
+      stats
+    });
+
+  } catch (error) {
+    logger.error('Error getting branding stats:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to get branding statistics'
+    });
+  }
+});
+
+/**
+ * Export branding configuration
+ */
+router.get('/export', authMiddleware, async (req, res) => {
+  try {
+    const tenantId = req.tenant.id;
+    
+    // Check permissions
+    if (!req.user || !['priest', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'Only priests and administrators can export branding configuration'
+      });
+    }
+
+    const exportData = await BrandingService.exportBrandingConfig(tenantId);
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="branding-config-${tenantId}-${Date.now()}.json"`);
+    res.json(exportData);
+
+  } catch (error) {
+    logger.error('Error exporting branding config:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to export branding configuration'
+    });
+  }
+});
+
+/**
+ * Import branding configuration
+ */
+router.post('/import', authMiddleware, async (req, res) => {
+  try {
+    const tenantId = req.tenant.id;
+    
+    // Check permissions
+    if (!req.user || !['priest', 'admin'].includes(req.user.role)) {
+      return res.status(403).json({
+        error: 'Only priests and administrators can import branding configuration'
+      });
+    }
+
+    if (!req.body || !req.body.branding) {
+      return res.status(400).json({
+        error: 'Invalid import data. Expected branding configuration object.'
+      });
+    }
+
+    const importedBranding = await BrandingService.importBrandingConfig(
+      tenantId,
+      req.body,
+      req.user
+    );
+
+    res.json({
+      success: true,
+      message: 'Branding configuration imported successfully',
+      branding: importedBranding
+    });
+
+  } catch (error) {
+    logger.error('Error importing branding config:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to import branding configuration'
+    });
+  }
+});
+
+/**
+ * Clear branding cache
+ */
+router.post('/clear-cache', authMiddleware, async (req, res) => {
+  try {
+    const tenantId = req.tenant.id;
+    
+    // Check permissions (admin only)
+    if (!req.user || req.user.role !== 'admin') {
+      return res.status(403).json({
+        error: 'Only administrators can clear branding cache'
+      });
+    }
+
+    await BrandingService.clearBrandingCache(tenantId);
+
+    res.json({
+      success: true,
+      message: 'Branding cache cleared successfully'
+    });
+
+  } catch (error) {
+    logger.error('Error clearing branding cache:', error);
+    res.status(500).json({
+      error: error.message || 'Failed to clear branding cache'
+    });
   }
 });
 

@@ -1,431 +1,586 @@
 const { cache } = require('../config/redis');
-const TenantService = require('./TenantService');
+const { createTenantQuery } = require('../utils/tenantQuery');
 const logger = require('../utils/logger');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs').promises;
 
 class BrandingService {
-  // Obtener configuración completa de branding
-  static async getBrandingConfig(tenantId) {
+  constructor() {
+    this.defaultBranding = {
+      primaryColor: '#2563eb',
+      secondaryColor: '#1e40af',
+      accentColor: '#f59e0b',
+      backgroundColor: '#ffffff',
+      textColor: '#1f2937',
+      fontFamily: 'Inter, sans-serif',
+      logoUrl: null,
+      faviconUrl: null,
+      organizationName: 'Pan Compartido',
+      tagline: 'Compartiendo esperanza, alimentando amor',
+      contactInfo: {
+        phone: '',
+        email: '',
+        address: '',
+        website: '',
+        socialMedia: {
+          facebook: '',
+          instagram: '',
+          twitter: '',
+          youtube: ''
+        }
+      },
+      customCss: '',
+      emailSignature: '',
+      whatsappFooter: '🙏 Pan Compartido - Compartiendo esperanza'
+    };
+  }
+
+  /**
+   * Get branding configuration for tenant
+   */
+  async getBrandingConfig(tenantId) {
     try {
       const cacheKey = `branding:${tenantId}`;
-      let config = await cache.get(cacheKey);
+      let branding = await cache.get(cacheKey);
 
-      if (!config) {
-        const tenant = await TenantService.getTenant(tenantId);
+      if (!branding) {
+        const tenantQuery = createTenantQuery(tenantId);
         
-        config = {
-          tenant: {
-            id: tenant.id,
-            name: tenant.name,
-            slug: tenant.slug
-          },
-          branding: {
-            logo: tenant.logoUrl || '/images/default-logo.png',
-            colors: {
-              primary: tenant.branding?.colors?.primary || '#2563eb',
-              secondary: tenant.branding?.colors?.secondary || '#10b981',
-              accent: tenant.branding?.colors?.accent || '#f59e0b',
-              background: tenant.branding?.colors?.background || '#f8fafc',
-              text: tenant.branding?.colors?.text || '#1f2937'
-            },
-            fonts: {
-              primary: tenant.branding?.fonts?.primary || 'Inter, sans-serif',
-              secondary: tenant.branding?.fonts?.secondary || 'Inter, sans-serif'
-            },
-            customCss: tenant.branding?.customCss || ''
-          },
-          contact: {
-            phone: tenant.contactInfo?.phone || '',
-            email: tenant.contactInfo?.email || '',
-            address: tenant.contactInfo?.address || '',
-            website: tenant.contactInfo?.website || '',
-            socialMedia: {
-              facebook: tenant.contactInfo?.socialMedia?.facebook || '',
-              instagram: tenant.contactInfo?.socialMedia?.instagram || '',
-              twitter: tenant.contactInfo?.socialMedia?.twitter || '',
-              whatsapp: tenant.contactInfo?.socialMedia?.whatsapp || ''
-            }
-          },
-          settings: {
-            campaignFrequency: tenant.settings?.campaignFrequency || 'weekly',
-            minOrderAmount: tenant.settings?.minOrderAmount || 50000,
-            platformFeePercentage: tenant.settings?.platformFeePercentage || 5,
-            allowPublicDonations: tenant.settings?.allowPublicDonations || true,
-            requirePhoneVerification: tenant.settings?.requirePhoneVerification || false,
-            enableWhatsAppNotifications: tenant.settings?.enableWhatsAppNotifications || true,
-            enableEmailNotifications: tenant.settings?.enableEmailNotifications || true
-          }
-        };
+        // Get branding configuration from database
+        const brandingRecord = await tenantQuery.table('tenant_branding')
+          .where('tenant_id', tenantId)
+          .first();
 
-        // Guardar en cache por 2 horas
-        await cache.set(cacheKey, config, 7200);
+        if (brandingRecord) {
+          branding = {
+            ...this.defaultBranding,
+            ...JSON.parse(brandingRecord.config || '{}'),
+            id: brandingRecord.id,
+            updatedAt: brandingRecord.updated_at
+          };
+        } else {
+          // Return default branding if none exists
+          branding = { ...this.defaultBranding };
+        }
+
+        // Cache for 1 hour
+        await cache.set(cacheKey, branding, 3600);
       }
 
-      return config;
+      return branding;
     } catch (error) {
-      logger.error('Error obteniendo configuración de branding:', error);
-      throw error;
+      logger.error('Error getting branding config:', error);
+      return { ...this.defaultBranding };
     }
   }
 
-  // Actualizar configuración de branding
-  static async updateBrandingConfig(tenantId, updates, updatedBy) {
+  /**
+   * Update branding configuration
+   */
+  async updateBrandingConfig(tenantId, brandingData, updatedBy) {
     try {
-      const tenant = await TenantService.getTenant(tenantId);
-      
-      // Preparar datos de actualización
-      const updateData = {};
+      const tenantQuery = createTenantQuery(tenantId);
 
-      // Actualizar branding
-      if (updates.branding) {
-        updateData.branding = {
-          ...tenant.branding,
-          ...updates.branding
-        };
+      // Validate branding data
+      const validatedData = this.validateBrandingData(brandingData);
 
-        // Validar colores si se proporcionan
-        if (updates.branding.colors) {
-          updateData.branding.colors = {
-            ...tenant.branding?.colors,
-            ...updates.branding.colors
-          };
-        }
+      // Check if branding record exists
+      const existingBranding = await tenantQuery.table('tenant_branding')
+        .where('tenant_id', tenantId)
+        .first();
 
-        // Validar fuentes si se proporcionan
-        if (updates.branding.fonts) {
-          updateData.branding.fonts = {
-            ...tenant.branding?.fonts,
-            ...updates.branding.fonts
-          };
-        }
+      let branding;
+      if (existingBranding) {
+        // Update existing branding
+        const [updatedBranding] = await tenantQuery.table('tenant_branding')
+          .where('tenant_id', tenantId)
+          .update({
+            config: JSON.stringify(validatedData),
+            updated_at: new Date(),
+            updated_by: updatedBy?.id
+          })
+          .returning('*');
+        
+        branding = updatedBranding;
+      } else {
+        // Create new branding record
+        const [newBranding] = await tenantQuery.table('tenant_branding')
+          .insert({
+            tenant_id: tenantId,
+            config: JSON.stringify(validatedData),
+            created_at: new Date(),
+            updated_at: new Date(),
+            created_by: updatedBy?.id,
+            updated_by: updatedBy?.id
+          })
+          .returning('*');
+        
+        branding = newBranding;
       }
 
-      // Actualizar información de contacto
-      if (updates.contact) {
-        updateData.contactInfo = {
-          ...tenant.contactInfo,
-          ...updates.contact
-        };
-
-        // Manejar redes sociales por separado
-        if (updates.contact.socialMedia) {
-          updateData.contactInfo.socialMedia = {
-            ...tenant.contactInfo?.socialMedia,
-            ...updates.contact.socialMedia
-          };
-        }
-      }
-
-      // Actualizar configuraciones
-      if (updates.settings) {
-        updateData.settings = {
-          ...tenant.settings,
-          ...updates.settings
-        };
-      }
-
-      // Actualizar logo URL si se proporciona
-      if (updates.logoUrl) {
-        updateData.logoUrl = updates.logoUrl;
-      }
-
-      // Actualizar tenant
-      await tenant.update(updateData);
-
-      // Limpiar cache
+      // Clear cache
       await this.clearBrandingCache(tenantId);
 
-      logger.info('Configuración de branding actualizada', {
+      logger.info('Branding configuration updated:', {
         tenantId,
-        updatedBy: updatedBy.id,
-        sections: Object.keys(updates)
+        brandingId: branding.id,
+        updatedBy: updatedBy?.id
       });
 
-      return await this.getBrandingConfig(tenantId);
+      return {
+        ...this.defaultBranding,
+        ...validatedData,
+        id: branding.id,
+        updatedAt: branding.updated_at
+      };
+
     } catch (error) {
-      logger.error('Error actualizando configuración de branding:', error);
+      logger.error('Error updating branding config:', error);
       throw error;
     }
   }
 
-  // Generar CSS personalizado para el tenant
-  static async generateCustomCSS(tenantId) {
+  /**
+   * Upload logo or favicon
+   */
+  async uploadBrandingImage(tenantId, file, imageType, updatedBy) {
     try {
-      const config = await this.getBrandingConfig(tenantId);
-      const { colors, fonts, customCss } = config.branding;
+      // Validate image type
+      const validTypes = ['logo', 'favicon'];
+      if (!validTypes.includes(imageType)) {
+        throw new Error('Invalid image type. Must be logo or favicon');
+      }
 
-      const css = `
-        :root {
-          --primary-color: ${colors.primary};
-          --secondary-color: ${colors.secondary};
-          --accent-color: ${colors.accent};
-          --background-color: ${colors.background};
-          --text-color: ${colors.text};
-          --primary-font: ${fonts.primary};
-          --secondary-font: ${fonts.secondary};
-        }
+      // Validate file
+      if (!file) {
+        throw new Error('No file provided');
+      }
 
-        .btn-primary {
-          background-color: var(--primary-color);
-          border-color: var(--primary-color);
-        }
+      const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/svg+xml', 'image/webp'];
+      if (!allowedMimeTypes.includes(file.mimetype)) {
+        throw new Error('Invalid file type. Only JPEG, PNG, SVG, and WebP are allowed');
+      }
 
-        .btn-primary:hover {
-          background-color: color-mix(in srgb, var(--primary-color) 85%, black);
-          border-color: color-mix(in srgb, var(--primary-color) 85%, black);
-        }
+      // Create upload directory if it doesn't exist
+      const uploadDir = path.join(process.cwd(), 'uploads', 'branding', tenantId.toString());
+      await fs.mkdir(uploadDir, { recursive: true });
 
-        .btn-secondary {
-          background-color: var(--secondary-color);
-          border-color: var(--secondary-color);
-        }
+      // Generate unique filename
+      const fileExtension = path.extname(file.originalname);
+      const fileName = `${imageType}_${Date.now()}${fileExtension}`;
+      const filePath = path.join(uploadDir, fileName);
 
-        .btn-secondary:hover {
-          background-color: color-mix(in srgb, var(--secondary-color) 85%, black);
-          border-color: color-mix(in srgb, var(--secondary-color) 85%, black);
-        }
+      // Save file
+      await fs.writeFile(filePath, file.buffer);
 
-        .text-primary {
-          color: var(--primary-color) !important;
-        }
+      // Generate public URL
+      const publicUrl = `/uploads/branding/${tenantId}/${fileName}`;
 
-        .text-secondary {
-          color: var(--secondary-color) !important;
-        }
+      // Update branding configuration
+      const currentBranding = await this.getBrandingConfig(tenantId);
+      const updatedBranding = {
+        ...currentBranding,
+        [`${imageType}Url`]: publicUrl
+      };
 
-        .bg-primary {
-          background-color: var(--primary-color) !important;
-        }
+      await this.updateBrandingConfig(tenantId, updatedBranding, updatedBy);
 
-        .bg-secondary {
-          background-color: var(--secondary-color) !important;
-        }
+      logger.info('Branding image uploaded:', {
+        tenantId,
+        imageType,
+        fileName,
+        updatedBy: updatedBy?.id
+      });
 
-        .border-primary {
-          border-color: var(--primary-color) !important;
-        }
+      return {
+        success: true,
+        imageType,
+        url: publicUrl,
+        fileName
+      };
 
-        body {
-          font-family: var(--primary-font);
-          background-color: var(--background-color);
-          color: var(--text-color);
-        }
-
-        h1, h2, h3, h4, h5, h6 {
-          font-family: var(--secondary-font);
-        }
-
-        ${customCss || ''}
-      `;
-
-      return css.trim();
     } catch (error) {
-      logger.error('Error generando CSS personalizado:', error);
+      logger.error('Error uploading branding image:', error);
       throw error;
     }
   }
 
-  // Obtener templates de mensajes personalizados
-  static async getMessageTemplates(tenantId) {
+  /**
+   * Delete branding image
+   */
+  async deleteBrandingImage(tenantId, imageType, updatedBy) {
     try {
-      const cacheKey = `templates:${tenantId}`;
-      let templates = await cache.get(cacheKey);
+      const validTypes = ['logo', 'favicon'];
+      if (!validTypes.includes(imageType)) {
+        throw new Error('Invalid image type');
+      }
 
-      if (!templates) {
-        const config = await this.getBrandingConfig(tenantId);
-        const tenantName = config.tenant.name;
-        const contactInfo = config.contact;
+      const currentBranding = await this.getBrandingConfig(tenantId);
+      const imageUrl = currentBranding[`${imageType}Url`];
 
-        templates = {
-          whatsapp: {
-            welcome: `¡Hola! 👋 Bienvenido a ${tenantName}. Estamos aquí para ayudar a las familias de nuestra comunidad. ¿En qué podemos ayudarte?`,
-            
-            newCampaign: `🙏 ¡Hola {name}! ${tenantName} necesita tu ayuda esta semana:\n\n{needs}\n\n¿Puedes colaborar? Responde SÍ para donar. ¡Dios te bendiga! 🙏`,
-            
-            donationConfirmed: `¡Gracias {name}! 🙏 Tu donación de {items} está confirmada. Con tu ayuda alimentaremos a {families} familias. ${tenantName} te agradece infinitamente.`,
-            
-            reminder: `📅 Hola {name}! Recordatorio amigable: habíamos quedado en que donarías {items} esta semana. ¿Sigue en pie? ¡No hay problema si cambió algo! Bendiciones 🙏`,
-            
-            thankYou: `🙏 {name}, gracias por tu generoso corazón. Tu donación de {items} llegó perfectamente. Que Dios multiplique tu bendición. - ${tenantName}`,
-            
-            campaignComplete: `🎉 ¡Increíble! Gracias a donantes como tú, completamos la meta de esta semana. {families} familias recibirán sus mercados. ¡Dios los bendiga! - ${tenantName}`
-          },
-          
-          email: {
-            welcome: {
-              subject: `Bienvenido a ${tenantName} - Pan Compartido`,
-              body: `Estimado/a {name},\n\nBienvenido a la familia de ${tenantName}. Juntos podemos hacer la diferencia en nuestra comunidad.\n\nContacto: ${contactInfo.phone}\nEmail: ${contactInfo.email}\n\nBendiciones,\nEquipo ${tenantName}`
-            },
-            
-            donationReceipt: {
-              subject: `Confirmación de Donación - ${tenantName}`,
-              body: `Estimado/a {name},\n\nConfirmamos la recepción de tu donación:\n{items}\n\nFecha: {date}\nValor estimado: {value}\n\nGracias por tu generosidad.\n\nBendiciones,\n${tenantName}`
-            },
-            
-            campaignUpdate: {
-              subject: `Actualización de Campaña - ${tenantName}`,
-              body: `Estimado/a {name},\n\nTe contamos cómo va nuestra campaña:\n\nProgreso: {progress}%\nFamilias ayudadas: {families}\nDonaciones recibidas: {donations}\n\n¡Gracias por ser parte de esta misión!\n\nBendiciones,\n${tenantName}`
-            }
-          },
-          
-          social: {
-            facebook: {
-              newCampaign: `🏛️ ${tenantName} necesita tu ayuda:\n\n{needs}\n\n¡Únete a nuestra misión de alimentar a las familias necesitadas! 💝\n\n#PanCompartido #${tenantName.replace(/\s+/g, '')} #Solidaridad`,
-              
-              progress: `📊 ¡Vamos muy bien! Gracias a nuestros donantes:\n\n✅ {progress}% de la meta alcanzada\n👨‍👩‍👧‍👦 {families} familias serán ayudadas\n🙏 {donors} personas han donado\n\n¡Sigamos juntos! #PanCompartido`,
-              
-              completed: `🎉 ¡META ALCANZADA! Gracias a todos los que donaron:\n\n👨‍👩‍👧‍👦 {families} familias recibirán sus mercados\n💝 {totalDonations} donaciones recibidas\n\n¡Dios los bendiga! #PanCompartido #Logrado`
-            },
-            
-            instagram: {
-              story: `${tenantName} 🏛️\n\n{needs}\n\n¡Ayúdanos! 💝\n\n#PanCompartido`,
-              post: `🙏 Juntos podemos más. ${tenantName} necesita:\n\n{needs}\n\n¡Tu donación hace la diferencia! 💝\n\n#PanCompartido #Solidaridad #ComunidadUnida`
-            }
-          }
+      if (imageUrl) {
+        // Delete file from filesystem
+        try {
+          const filePath = path.join(process.cwd(), imageUrl);
+          await fs.unlink(filePath);
+        } catch (fileError) {
+          logger.warn('Could not delete image file:', fileError);
+        }
+
+        // Update branding configuration
+        const updatedBranding = {
+          ...currentBranding,
+          [`${imageType}Url`]: null
         };
 
-        // Guardar en cache por 4 horas
-        await cache.set(cacheKey, templates, 14400);
+        await this.updateBrandingConfig(tenantId, updatedBranding, updatedBy);
       }
 
-      return templates;
+      logger.info('Branding image deleted:', {
+        tenantId,
+        imageType,
+        updatedBy: updatedBy?.id
+      });
+
+      return { success: true };
+
     } catch (error) {
-      logger.error('Error obteniendo templates de mensajes:', error);
+      logger.error('Error deleting branding image:', error);
       throw error;
     }
   }
 
-  // Personalizar template de mensaje
-  static async customizeMessageTemplate(tenantId, platform, templateType, content, updatedBy) {
+  /**
+   * Get contact information for tenant
+   */
+  async getContactInfo(tenantId) {
     try {
-      // Obtener templates actuales
-      const templates = await this.getMessageTemplates(tenantId);
-      
-      // Actualizar el template específico
-      if (!templates[platform]) {
-        templates[platform] = {};
-      }
-      
-      templates[platform][templateType] = content;
+      const branding = await this.getBrandingConfig(tenantId);
+      return branding.contactInfo || this.defaultBranding.contactInfo;
+    } catch (error) {
+      logger.error('Error getting contact info:', error);
+      return this.defaultBranding.contactInfo;
+    }
+  }
 
-      // Guardar en base de datos (en el campo branding del tenant)
-      const tenant = await TenantService.getTenant(tenantId);
+  /**
+   * Update contact information
+   */
+  async updateContactInfo(tenantId, contactInfo, updatedBy) {
+    try {
+      const currentBranding = await this.getBrandingConfig(tenantId);
+      
       const updatedBranding = {
-        ...tenant.branding,
-        messageTemplates: {
-          ...tenant.branding?.messageTemplates,
-          [platform]: {
-            ...tenant.branding?.messageTemplates?.[platform],
-            [templateType]: content
-          }
+        ...currentBranding,
+        contactInfo: {
+          ...this.defaultBranding.contactInfo,
+          ...currentBranding.contactInfo,
+          ...contactInfo
         }
       };
 
-      await tenant.update({ branding: updatedBranding });
+      return await this.updateBrandingConfig(tenantId, updatedBranding, updatedBy);
 
-      // Limpiar cache
-      await cache.del(`templates:${tenantId}`);
-
-      logger.info('Template de mensaje personalizado', {
-        tenantId,
-        platform,
-        templateType,
-        updatedBy: updatedBy.id
-      });
-
-      return await this.getMessageTemplates(tenantId);
     } catch (error) {
-      logger.error('Error personalizando template de mensaje:', error);
+      logger.error('Error updating contact info:', error);
       throw error;
     }
   }
 
-  // Validar configuración de branding
-  static validateBrandingConfig(config) {
-    const errors = [];
+  /**
+   * Generate CSS variables for frontend
+   */
+  async generateCssVariables(tenantId) {
+    try {
+      const branding = await this.getBrandingConfig(tenantId);
 
-    // Validar colores
-    if (config.branding?.colors) {
-      const colorRegex = /^#[0-9A-Fa-f]{6}$/;
-      const colors = config.branding.colors;
+      const cssVariables = `
+        :root {
+          --primary-color: ${branding.primaryColor};
+          --secondary-color: ${branding.secondaryColor};
+          --accent-color: ${branding.accentColor};
+          --background-color: ${branding.backgroundColor};
+          --text-color: ${branding.textColor};
+          --font-family: ${branding.fontFamily};
+        }
+        
+        ${branding.customCss || ''}
+      `;
+
+      return cssVariables.trim();
+
+    } catch (error) {
+      logger.error('Error generating CSS variables:', error);
+      return '';
+    }
+  }
+
+  /**
+   * Get branding for public pages (no authentication required)
+   */
+  async getPublicBranding(tenantId) {
+    try {
+      const branding = await this.getBrandingConfig(tenantId);
+
+      // Return only public-safe branding information
+      return {
+        primaryColor: branding.primaryColor,
+        secondaryColor: branding.secondaryColor,
+        accentColor: branding.accentColor,
+        backgroundColor: branding.backgroundColor,
+        textColor: branding.textColor,
+        fontFamily: branding.fontFamily,
+        logoUrl: branding.logoUrl,
+        faviconUrl: branding.faviconUrl,
+        organizationName: branding.organizationName,
+        tagline: branding.tagline,
+        contactInfo: {
+          phone: branding.contactInfo?.phone || '',
+          email: branding.contactInfo?.email || '',
+          address: branding.contactInfo?.address || '',
+          website: branding.contactInfo?.website || '',
+          socialMedia: branding.contactInfo?.socialMedia || {}
+        }
+      };
+
+    } catch (error) {
+      logger.error('Error getting public branding:', error);
+      return this.getPublicDefaultBranding();
+    }
+  }
+
+  /**
+   * Validate branding data
+   */
+  validateBrandingData(data) {
+    const validated = {};
+
+    // Validate colors (hex format)
+    const colorFields = ['primaryColor', 'secondaryColor', 'accentColor', 'backgroundColor', 'textColor'];
+    const hexColorRegex = /^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/;
+
+    colorFields.forEach(field => {
+      if (data[field]) {
+        if (hexColorRegex.test(data[field])) {
+          validated[field] = data[field];
+        } else {
+          throw new Error(`Invalid color format for ${field}. Must be hex format (e.g., #ffffff)`);
+        }
+      }
+    });
+
+    // Validate strings
+    const stringFields = ['fontFamily', 'organizationName', 'tagline', 'customCss', 'emailSignature', 'whatsappFooter'];
+    stringFields.forEach(field => {
+      if (data[field] !== undefined) {
+        validated[field] = String(data[field]).trim();
+      }
+    });
+
+    // Validate URLs
+    const urlFields = ['logoUrl', 'faviconUrl'];
+    urlFields.forEach(field => {
+      if (data[field]) {
+        try {
+          new URL(data[field]);
+          validated[field] = data[field];
+        } catch {
+          // If not a valid URL, treat as relative path
+          validated[field] = data[field];
+        }
+      }
+    });
+
+    // Validate contact info
+    if (data.contactInfo) {
+      validated.contactInfo = this.validateContactInfo(data.contactInfo);
+    }
+
+    return validated;
+  }
+
+  /**
+   * Validate contact information
+   */
+  validateContactInfo(contactInfo) {
+    const validated = {};
+
+    // Validate basic contact fields
+    const contactFields = ['phone', 'email', 'address', 'website'];
+    contactFields.forEach(field => {
+      if (contactInfo[field] !== undefined) {
+        validated[field] = String(contactInfo[field]).trim();
+      }
+    });
+
+    // Validate email format
+    if (validated.email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(validated.email)) {
+        throw new Error('Invalid email format');
+      }
+    }
+
+    // Validate phone format (basic validation)
+    if (validated.phone) {
+      const phoneRegex = /^[\+]?[1-9][\d\s\-\(\)]{7,15}$/;
+      if (!phoneRegex.test(validated.phone.replace(/\s/g, ''))) {
+        throw new Error('Invalid phone format');
+      }
+    }
+
+    // Validate social media
+    if (contactInfo.socialMedia) {
+      validated.socialMedia = {};
+      const socialFields = ['facebook', 'instagram', 'twitter', 'youtube'];
       
-      Object.keys(colors).forEach(colorKey => {
-        if (colors[colorKey] && !colorRegex.test(colors[colorKey])) {
-          errors.push(`Color ${colorKey} debe ser un código hexadecimal válido`);
+      socialFields.forEach(field => {
+        if (contactInfo.socialMedia[field] !== undefined) {
+          validated.socialMedia[field] = String(contactInfo.socialMedia[field]).trim();
         }
       });
     }
 
-    // Validar URLs
-    if (config.logoUrl) {
-      try {
-        new URL(config.logoUrl);
-      } catch {
-        errors.push('La URL del logo no es válida');
-      }
-    }
-
-    // Validar email
-    if (config.contact?.email) {
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(config.contact.email)) {
-        errors.push('El email de contacto no es válido');
-      }
-    }
-
-    // Validar teléfono
-    if (config.contact?.phone) {
-      const phoneRegex = /^[0-9\-\+\(\)\s]+$/;
-      if (!phoneRegex.test(config.contact.phone)) {
-        errors.push('El teléfono de contacto no es válido');
-      }
-    }
-
-    return errors;
+    return validated;
   }
 
-  // Limpiar cache de branding
-  static async clearBrandingCache(tenantId) {
+  /**
+   * Clear branding cache
+   */
+  async clearBrandingCache(tenantId) {
     try {
-      const cacheKeys = [
-        `branding:${tenantId}`,
-        `templates:${tenantId}`,
-        `css:${tenantId}`
+      const cacheKey = `branding:${tenantId}`;
+      await cache.del(cacheKey);
+      
+      logger.info('Branding cache cleared:', { tenantId });
+    } catch (error) {
+      logger.error('Error clearing branding cache:', error);
+    }
+  }
+
+  /**
+   * Get default public branding
+   */
+  getPublicDefaultBranding() {
+    return {
+      primaryColor: this.defaultBranding.primaryColor,
+      secondaryColor: this.defaultBranding.secondaryColor,
+      accentColor: this.defaultBranding.accentColor,
+      backgroundColor: this.defaultBranding.backgroundColor,
+      textColor: this.defaultBranding.textColor,
+      fontFamily: this.defaultBranding.fontFamily,
+      logoUrl: null,
+      faviconUrl: null,
+      organizationName: this.defaultBranding.organizationName,
+      tagline: this.defaultBranding.tagline,
+      contactInfo: this.defaultBranding.contactInfo
+    };
+  }
+
+  /**
+   * Export branding configuration
+   */
+  async exportBrandingConfig(tenantId) {
+    try {
+      const branding = await this.getBrandingConfig(tenantId);
+      
+      return {
+        exportedAt: new Date().toISOString(),
+        tenantId,
+        branding: {
+          ...branding,
+          // Remove sensitive or system-specific data
+          id: undefined,
+          updatedAt: undefined
+        }
+      };
+
+    } catch (error) {
+      logger.error('Error exporting branding config:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Import branding configuration
+   */
+  async importBrandingConfig(tenantId, importData, updatedBy) {
+    try {
+      if (!importData.branding) {
+        throw new Error('Invalid import data: missing branding configuration');
+      }
+
+      // Validate and import branding data
+      const validatedData = this.validateBrandingData(importData.branding);
+      
+      const result = await this.updateBrandingConfig(tenantId, validatedData, updatedBy);
+
+      logger.info('Branding configuration imported:', {
+        tenantId,
+        importedFrom: importData.exportedAt,
+        updatedBy: updatedBy?.id
+      });
+
+      return result;
+
+    } catch (error) {
+      logger.error('Error importing branding config:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get branding statistics
+   */
+  async getBrandingStats(tenantId) {
+    try {
+      const branding = await this.getBrandingConfig(tenantId);
+      
+      const stats = {
+        hasCustomLogo: !!branding.logoUrl,
+        hasCustomFavicon: !!branding.faviconUrl,
+        hasCustomColors: branding.primaryColor !== this.defaultBranding.primaryColor,
+        hasCustomCss: !!branding.customCss,
+        hasContactInfo: !!(branding.contactInfo?.phone || branding.contactInfo?.email),
+        hasSocialMedia: !!(
+          branding.contactInfo?.socialMedia?.facebook ||
+          branding.contactInfo?.socialMedia?.instagram ||
+          branding.contactInfo?.socialMedia?.twitter ||
+          branding.contactInfo?.socialMedia?.youtube
+        ),
+        customizationLevel: 0
+      };
+
+      // Calculate customization level (0-100)
+      const customizationFactors = [
+        stats.hasCustomLogo,
+        stats.hasCustomFavicon,
+        stats.hasCustomColors,
+        stats.hasCustomCss,
+        stats.hasContactInfo,
+        stats.hasSocialMedia
       ];
 
-      await Promise.all(cacheKeys.map(key => cache.del(key)));
-      
-      logger.info('Cache de branding limpiado', { tenantId });
-    } catch (error) {
-      logger.error('Error limpiando cache de branding:', error);
-    }
-  }
+      stats.customizationLevel = Math.round(
+        (customizationFactors.filter(Boolean).length / customizationFactors.length) * 100
+      );
 
-  // Obtener configuración pública (sin datos sensibles)
-  static async getPublicBrandingConfig(tenantId) {
-    try {
-      const config = await this.getBrandingConfig(tenantId);
-      
-      // Retornar solo información pública
-      return {
-        tenant: config.tenant,
-        branding: {
-          logo: config.branding.logo,
-          colors: config.branding.colors,
-          fonts: config.branding.fonts
-        },
-        contact: {
-          phone: config.contact.phone,
-          email: config.contact.email,
-          address: config.contact.address,
-          website: config.contact.website,
-          socialMedia: config.contact.socialMedia
-        }
-      };
+      return stats;
+
     } catch (error) {
-      logger.error('Error obteniendo configuración pública de branding:', error);
-      throw error;
+      logger.error('Error getting branding stats:', error);
+      return {
+        hasCustomLogo: false,
+        hasCustomFavicon: false,
+        hasCustomColors: false,
+        hasCustomCss: false,
+        hasContactInfo: false,
+        hasSocialMedia: false,
+        customizationLevel: 0
+      };
     }
   }
 }
 
-module.exports = BrandingService;
+module.exports = new BrandingService();

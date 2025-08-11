@@ -12,16 +12,29 @@ const authMiddleware = require('./middleware/authMiddleware');
 const authRoutes = require('./routes/auth');
 const tenantsRoutes = require('./routes/tenants');
 const brandingRoutes = require('./routes/branding');
+const messageTemplatesRoutes = require('./routes/messageTemplates');
 const profileRoutes = require('./routes/profile');
 const campaignsRoutes = require('./routes/campaigns');
+const campaignJobsRoutes = require('./routes/campaignJobs');
 const productsRoutes = require('./routes/products');
 const donationsRoutes = require('./routes/donations');
 const usersRoutes = require('./routes/users');
 const paymentsRoutes = require('./routes/payments');
 const suppliersRoutes = require('./routes/suppliers');
 const whatsappRoutes = require('./routes/whatsapp');
+const notificationsRoutes = require('./routes/notifications');
 
 const app = express();
+
+// Inicializar jobs programados
+if (process.env.NODE_ENV !== 'test') {
+  const CampaignJobs = require('./jobs/campaignJobs');
+  CampaignJobs.init();
+  
+  // Inicializar jobs de notificaciones automáticas
+  const NotificationJobs = require('./jobs/notificationJobs');
+  NotificationJobs.initialize();
+}
 
 // Middleware de seguridad
 app.use(helmet());
@@ -62,13 +75,16 @@ app.use('/api/v1', tenantMiddleware);
 // Rutas protegidas (requieren autenticación)
 app.use('/api/v1/tenants', authMiddleware, tenantsRoutes);
 app.use('/api/v1/branding', authMiddleware, brandingRoutes);
+app.use('/api/v1/message-templates', authMiddleware, messageTemplatesRoutes);
 app.use('/api/v1/profile', authMiddleware, profileRoutes);
 app.use('/api/v1/campaigns', authMiddleware, campaignsRoutes);
+app.use('/api/v1/campaign-jobs', authMiddleware, campaignJobsRoutes);
 app.use('/api/v1/products', authMiddleware, productsRoutes);
 app.use('/api/v1/donations', authMiddleware, donationsRoutes);
 app.use('/api/v1/users', authMiddleware, usersRoutes);
 app.use('/api/v1/payments', authMiddleware, paymentsRoutes);
 app.use('/api/v1/suppliers', authMiddleware, suppliersRoutes);
+app.use('/api/v1/notifications', authMiddleware, notificationsRoutes);
 
 // Middleware de manejo de errores
 app.use(errorHandler);

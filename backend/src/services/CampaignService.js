@@ -1,50 +1,28 @@
 const Campaign = require('../models/Campaign');
-const User = require('../models/User');
-const TenantService = require('./TenantService');
-const logger = require('../utils/logger');
+const { createTenantQuery } = require('../utils/tenantQuery');
 const { cache } = require('../config/redis');
+const logger = require('../utils/logger');
 
 class CampaignService {
-  // Crear nueva campaña
-  static async createCampaign(campaignData, createdBy) {
+  // Crear nueva campaña con validaciones
+  static async createCampaign(data, tenantId, createdBy) {
     try {
-      // Verificar que el usuario tenga permisos para crear campañas
-      const user = await User.findById(createdBy);
-      if (!user || !user.hasAnyRole(['coordinador', 'parroco', 'admin'])) {
-        throw new Error('INSUFFICIENT_PERMISSIONS');
-      }
+      // Validar que no haya campañas activas conflictivas
+      await this.validateCampaignCreation(data, tenantId);
 
-      // Verificar que el tenant existe
-      await TenantService.getTenant(campaignData.tenantId);
+      // Enriquecer datos con información del creador
+      const campaignData = {
+        ...data,
+        createdBy: createdBy.id
+      };
 
-      // Validar fechas
-      const startDate = new Date(campaignData.startDate);
-      const endDate = new Date(campaignData.endDate);
-      
-      if (startDate >= endDate) {
-        throw new Error('INVALID_DATE_RANGE');
-      }
-
-      if (endDate <= new Date()) {
-        throw new Error('END_DATE_IN_PAST');
-      }
-
-      // Validar objetivos
-      if (campaignData.goals && Object.keys(campaignData.goals).length === 0) {
-        throw new Error('GOALS_REQUIRED');
-      }
-
-      // Crear campaña
-      const campaign = await Campaign.create({
-        ...campaignData,
-        createdBy
-      });
+      const campaign = await Campaign.create(campaignData, tenantId);
 
       logger.info('Campaña creada por servicio', {
         campaignId: campaign.id,
+        tenantId,
         title: campaign.title,
-        createdBy,
-        tenantId: campaignData.tenantId
+        createdBy: createdBy.id
       });
 
       return campaign;
@@ -54,21 +32,18 @@ class CampaignService {
     }
   }
 
-  // Obtener campaña con validaciones
-  static async getCampaign(campaignId, userId = null) {
+  // Obtener campaña con validaciones de acceso
+  static async getCampaign(campaignId, tenantId, userId = null) {
     try {
-      const campaign = await Campaign.findById(campaignId);
+      const campaign = await Campaign.findById(campaignId, tenantId);
       
       if (!campaign) {
         throw new Error('CAMPAIGN_NOT_FOUND');
       }
 
-      // Si hay usuario, verificar que pertenezca al mismo tenant
+      // Verificar acceso si se proporciona userId
       if (userId) {
-        const user = await User.findById(userId);
-        if (user && user.tenantId !== campaign.tenantId) {
-          throw new Error('CROSS_TENANT_ACCESS_DENIED');
-        }
+        await this.validateUserAccess(campaign, userId, tenantId);
       }
 
       return campaign;
@@ -79,10 +54,10 @@ class CampaignService {
   }
 
   // Obtener campaña con estadísticas
-  static async getCampaignWithStats(campaignId, userId = null) {
+  static async getCampaignWithStats(campaignId, tenantId) {
     try {
-      const campaign = await this.getCampaign(campaignId, userId);
-      const stats = await campaign.getStats();
+      const campaign = await this.getCampaign(campaignId, tenantId);
+      const stats = await campaign.getStats(tenantId);
 
       return {
         campaign: campaign.toJSON(),
@@ -94,103 +69,86 @@ class CampaignService {
     }
   }
 
-  // Listar campañas de un tenant
-  static async listTenantCampaigns(tenantId, options = {}, userId = null) {
+  // Listar campañas con filtros avanzados
+  static async listCampaigns(tenantId, options = {}) {
     try {
-      // Verificar acceso del usuario si se proporciona
-      if (userId) {
-        const user = await User.findById(userId);
-        if (!user || user.tenantId !== tenantId) {
-          throw new Error('CROSS_TENANT_ACCESS_DENIED');
-        }
-      }
-
       const result = await Campaign.findByTenant(tenantId, options);
+      
+      // Enriquecer con información adicional si es necesario
+      const enrichedCampaigns = await Promise.all(
+        result.campaigns.map(async (campaign) => {
+          const campaignJson = campaign.toJSON();
+          
+          // Agregar información del creador si es necesario
+          if (options.includeCreator && campaign.createdBy) {
+            const tenantQuery = createTenantQuery(tenantId);
+            const creator = await tenantQuery.findById('users', campaign.createdBy);
+            campaignJson.creator = creator ? {
+              id: creator.id,
+              name: creator.name,
+              role: creator.role
+            } : null;
+          }
+
+          return campaignJson;
+        })
+      );
 
       logger.info('Campañas listadas', {
         tenantId,
-        requestedBy: userId,
         page: options.page || 1,
-        total: result.pagination.total
+        total: result.pagination.total,
+        filters: Object.keys(options).filter(key => options[key] !== null && options[key] !== undefined)
       });
 
-      return result;
+      return {
+        campaigns: enrichedCampaigns,
+        pagination: result.pagination
+      };
     } catch (error) {
-      logger.error('Error en CampaignService.listTenantCampaigns:', error);
+      logger.error('Error en CampaignService.listCampaigns:', error);
       throw error;
     }
   }
 
-  // Obtener campañas activas
-  static async getActiveCampaigns(tenantId, userId = null) {
+  // Obtener campañas activas para feligreses
+  static async getActiveCampaigns(tenantId) {
     try {
-      // Verificar acceso del usuario si se proporciona
-      if (userId) {
-        const user = await User.findById(userId);
-        if (!user || user.tenantId !== tenantId) {
-          throw new Error('CROSS_TENANT_ACCESS_DENIED');
-        }
-      }
-
-      const campaigns = await Campaign.findActiveCampaigns(tenantId);
-
-      // Agregar estadísticas a cada campaña
-      for (let campaign of campaigns) {
-        campaign.stats = await campaign.getStats();
-      }
-
-      return campaigns;
+      const campaigns = await Campaign.getActiveCampaigns(tenantId);
+      
+      return campaigns.map(campaign => {
+        const campaignJson = campaign.toJSON();
+        
+        // Agregar información útil para feligreses
+        campaignJson.urgentNeeds = this.getUrgentNeeds(campaign);
+        campaignJson.impactMessage = this.generateImpactMessage(campaign);
+        
+        return campaignJson;
+      });
     } catch (error) {
       logger.error('Error en CampaignService.getActiveCampaigns:', error);
       throw error;
     }
   }
 
-  // Actualizar campaña
-  static async updateCampaign(campaignId, updateData, updatedBy) {
+  // Actualizar campaña con validaciones
+  static async updateCampaign(campaignId, data, tenantId, updatedBy) {
     try {
-      const campaign = await Campaign.findById(campaignId);
-      
-      if (!campaign) {
-        throw new Error('CAMPAIGN_NOT_FOUND');
-      }
+      const campaign = await this.getCampaign(campaignId, tenantId);
 
-      // Verificar permisos del usuario
-      const user = await User.findById(updatedBy);
-      if (!user || user.tenantId !== campaign.tenantId) {
-        throw new Error('CROSS_TENANT_ACCESS_DENIED');
-      }
+      // Validar permisos de actualización
+      await this.validateUpdatePermissions(campaign, updatedBy, tenantId);
 
-      if (!user.hasAnyRole(['coordinador', 'parroco', 'admin'])) {
-        throw new Error('INSUFFICIENT_PERMISSIONS');
-      }
+      // Validar cambios específicos
+      await this.validateCampaignUpdate(campaign, data, tenantId);
 
-      // Validar que no se pueda editar una campaña completada
-      if (campaign.status === 'completed') {
-        throw new Error('CANNOT_EDIT_COMPLETED_CAMPAIGN');
-      }
-
-      // Validar fechas si se actualizan
-      if (updateData.startDate || updateData.endDate) {
-        const startDate = new Date(updateData.startDate || campaign.startDate);
-        const endDate = new Date(updateData.endDate || campaign.endDate);
-        
-        if (startDate >= endDate) {
-          throw new Error('INVALID_DATE_RANGE');
-        }
-
-        // No permitir cambiar fecha de inicio si la campaña ya está activa
-        if (campaign.status === 'active' && updateData.startDate) {
-          throw new Error('CANNOT_CHANGE_START_DATE_ACTIVE_CAMPAIGN');
-        }
-      }
-
-      await campaign.update(updateData);
+      await campaign.update(data, tenantId);
 
       logger.info('Campaña actualizada por servicio', {
         campaignId: campaign.id,
-        updatedBy,
-        changes: Object.keys(updateData)
+        tenantId,
+        updatedBy: updatedBy.id,
+        changes: Object.keys(data)
       });
 
       return campaign;
@@ -201,49 +159,27 @@ class CampaignService {
   }
 
   // Activar campaña
-  static async activateCampaign(campaignId, activatedBy) {
+  static async activateCampaign(campaignId, tenantId, activatedBy) {
     try {
-      const campaign = await Campaign.findById(campaignId);
-      
-      if (!campaign) {
-        throw new Error('CAMPAIGN_NOT_FOUND');
-      }
+      const campaign = await this.getCampaign(campaignId, tenantId);
 
-      // Verificar permisos
-      const user = await User.findById(activatedBy);
-      if (!user || user.tenantId !== campaign.tenantId) {
-        throw new Error('CROSS_TENANT_ACCESS_DENIED');
-      }
-
-      if (!user.hasAnyRole(['coordinador', 'parroco', 'admin'])) {
+      // Validar que el usuario puede activar campañas
+      if (!activatedBy.hasAnyRole(['parroco', 'coordinador', 'admin'])) {
         throw new Error('INSUFFICIENT_PERMISSIONS');
       }
 
-      // Verificar que la campaña esté en estado draft
-      if (campaign.status !== 'draft') {
-        throw new Error('CAMPAIGN_NOT_IN_DRAFT_STATUS');
-      }
+      // Validar que la campaña puede ser activada
+      await this.validateCampaignActivation(campaign, tenantId);
 
-      // Verificar que tenga objetivos definidos
-      if (!campaign.goals || Object.keys(campaign.goals).length === 0) {
-        throw new Error('CAMPAIGN_MISSING_GOALS');
-      }
+      await campaign.activate(tenantId);
 
-      // Verificar fechas
-      const now = new Date();
-      const startDate = new Date(campaign.startDate);
-      const endDate = new Date(campaign.endDate);
+      // Enviar notificaciones (implementar después)
+      await this.sendCampaignNotifications(campaign, 'activated', tenantId);
 
-      if (endDate <= now) {
-        throw new Error('CAMPAIGN_END_DATE_PASSED');
-      }
-
-      await campaign.update({ status: 'active' });
-
-      logger.info('Campaña activada', {
+      logger.info('Campaña activada por servicio', {
         campaignId: campaign.id,
-        title: campaign.title,
-        activatedBy
+        tenantId,
+        activatedBy: activatedBy.id
       });
 
       return campaign;
@@ -254,258 +190,390 @@ class CampaignService {
   }
 
   // Completar campaña
-  static async completeCampaign(campaignId, completedBy) {
+  static async completeCampaign(campaignId, tenantId, completedBy) {
     try {
-      const campaign = await Campaign.findById(campaignId);
-      
-      if (!campaign) {
-        throw new Error('CAMPAIGN_NOT_FOUND');
-      }
+      const campaign = await this.getCampaign(campaignId, tenantId);
 
-      // Verificar permisos
-      const user = await User.findById(completedBy);
-      if (!user || user.tenantId !== campaign.tenantId) {
-        throw new Error('CROSS_TENANT_ACCESS_DENIED');
-      }
-
-      if (!user.hasAnyRole(['coordinador', 'parroco', 'admin'])) {
+      // Validar permisos
+      if (!completedBy.hasAnyRole(['parroco', 'coordinador', 'admin'])) {
         throw new Error('INSUFFICIENT_PERMISSIONS');
       }
 
-      // Verificar que la campaña esté activa
-      if (campaign.status !== 'active') {
-        throw new Error('CAMPAIGN_NOT_ACTIVE');
-      }
+      await campaign.complete(tenantId);
 
-      // Actualizar progreso final
-      await campaign.updateProgress();
+      // Generar reporte final
+      const finalReport = await this.generateCampaignReport(campaign, tenantId);
 
-      // Marcar como completada
-      await campaign.markAsCompleted();
+      // Enviar notificaciones de completación
+      await this.sendCampaignNotifications(campaign, 'completed', tenantId);
 
-      logger.info('Campaña completada', {
+      logger.info('Campaña completada por servicio', {
         campaignId: campaign.id,
-        title: campaign.title,
-        completedBy,
-        finalAmount: campaign.raisedAmount
+        tenantId,
+        completedBy: completedBy.id,
+        finalStats: finalReport.summary
       });
 
-      return campaign;
+      return { campaign, report: finalReport };
     } catch (error) {
       logger.error('Error en CampaignService.completeCampaign:', error);
       throw error;
     }
   }
 
-  // Cancelar campaña
-  static async cancelCampaign(campaignId, cancelledBy, reason = null) {
+  // Procesar donación y actualizar progreso
+  static async processDonation(campaignId, donationData, tenantId) {
     try {
-      const campaign = await Campaign.findById(campaignId);
-      
-      if (!campaign) {
-        throw new Error('CAMPAIGN_NOT_FOUND');
+      const campaign = await this.getCampaign(campaignId, tenantId);
+
+      if (!campaign.isActive()) {
+        throw new Error('CAMPAIGN_NOT_ACTIVE');
       }
 
-      // Verificar permisos
-      const user = await User.findById(cancelledBy);
-      if (!user || user.tenantId !== campaign.tenantId) {
-        throw new Error('CROSS_TENANT_ACCESS_DENIED');
+      // Actualizar progreso por cada producto donado
+      for (const item of donationData.items) {
+        await campaign.updateProgress(
+          item.product_id,
+          item.quantity,
+          item.unit,
+          tenantId
+        );
       }
 
-      if (!user.hasAnyRole(['parroco', 'admin'])) {
-        throw new Error('INSUFFICIENT_PERMISSIONS');
-      }
+      // Verificar si se alcanzaron hitos importantes
+      await this.checkMilestones(campaign, tenantId);
 
-      // No permitir cancelar campañas completadas
-      if (campaign.status === 'completed') {
-        throw new Error('CANNOT_CANCEL_COMPLETED_CAMPAIGN');
-      }
-
-      await campaign.update({ 
-        status: 'cancelled',
-        description: campaign.description + (reason ? `\n\nCancelada: ${reason}` : '\n\nCampaña cancelada')
-      });
-
-      logger.info('Campaña cancelada', {
+      logger.info('Donación procesada para campaña', {
         campaignId: campaign.id,
-        title: campaign.title,
-        cancelledBy,
-        reason
+        tenantId,
+        items: donationData.items.length,
+        newProgress: campaign.getCompletionPercentage()
       });
 
       return campaign;
     } catch (error) {
-      logger.error('Error en CampaignService.cancelCampaign:', error);
+      logger.error('Error en CampaignService.processDonation:', error);
       throw error;
     }
   }
 
-  // Obtener donaciones de una campaña
-  static async getCampaignDonations(campaignId, options = {}, userId) {
+  // Obtener dashboard de campañas para párrocos
+  static async getCampaignDashboard(tenantId) {
     try {
-      const campaign = await this.getCampaign(campaignId, userId);
-      const result = await campaign.getDonations(options);
+      const cacheKey = `dashboard:campaigns:${tenantId}`;
+      let dashboard = await cache.get(cacheKey);
 
-      return result;
-    } catch (error) {
-      logger.error('Error en CampaignService.getCampaignDonations:', error);
-      throw error;
-    }
-  }
+      if (!dashboard) {
+        const tenantQuery = createTenantQuery(tenantId);
 
-  // Actualizar progreso de todas las campañas activas
-  static async updateAllActiveProgress(tenantId = null) {
-    try {
-      let query = db('campaigns').where('status', 'active');
-      
-      if (tenantId) {
-        query = query.where('tenant_id', tenantId);
-      }
-
-      const activeCampaigns = await query;
-
-      for (let campaignData of activeCampaigns) {
-        const campaign = new Campaign(campaignData);
-        await campaign.updateProgress();
-      }
-
-      logger.info('Progreso actualizado para campañas activas', {
-        tenantId,
-        campaignsUpdated: activeCampaigns.length
-      });
-
-      return activeCampaigns.length;
-    } catch (error) {
-      logger.error('Error actualizando progreso de campañas activas:', error);
-      throw error;
-    }
-  }
-
-  // Verificar y completar campañas expiradas
-  static async checkExpiredCampaigns(tenantId = null) {
-    try {
-      const db = require('../config/database');
-      let query = db('campaigns')
-        .where('status', 'active')
-        .where('end_date', '<', new Date());
-      
-      if (tenantId) {
-        query = query.where('tenant_id', tenantId);
-      }
-
-      const expiredCampaigns = await query;
-
-      for (let campaignData of expiredCampaigns) {
-        const campaign = new Campaign(campaignData);
-        await campaign.updateProgress();
-        await campaign.markAsCompleted();
-      }
-
-      logger.info('Campañas expiradas completadas automáticamente', {
-        tenantId,
-        campaignsCompleted: expiredCampaigns.length
-      });
-
-      return expiredCampaigns.length;
-    } catch (error) {
-      logger.error('Error verificando campañas expiradas:', error);
-      throw error;
-    }
-  }
-
-  // Obtener estadísticas generales de campañas
-  static async getCampaignStatistics(tenantId, userId) {
-    try {
-      // Verificar acceso
-      const user = await User.findById(userId);
-      if (!user || user.tenantId !== tenantId) {
-        throw new Error('CROSS_TENANT_ACCESS_DENIED');
-      }
-
-      const cacheKey = `campaign_stats:${tenantId}`;
-      let stats = await cache.get(cacheKey);
-
-      if (!stats) {
-        const db = require('../config/database');
-        
         const [
-          totalStats,
-          statusStats,
-          monthlyStats
+          activeCampaigns,
+          totalCampaigns,
+          completedCampaigns,
+          totalRaised,
+          totalFamiliesHelped
         ] = await Promise.all([
-          // Estadísticas totales
-          db('campaigns')
-            .where('tenant_id', tenantId)
-            .select(
-              db.raw('COUNT(*) as total_campaigns'),
-              db.raw('SUM(raised_amount) as total_raised'),
-              db.raw('SUM(target_amount) as total_target'),
-              db.raw('SUM(helped_families) as total_families_helped')
-            )
+          Campaign.getActiveCampaigns(tenantId),
+          tenantQuery.count('campaigns'),
+          tenantQuery.count('campaigns', { status: 'completed' }),
+          tenantQuery.table('campaigns')
+            .sum('raised_amount as total')
+            .where('status', 'completed')
             .first(),
-
-          // Estadísticas por estado
-          db('campaigns')
-            .where('tenant_id', tenantId)
-            .select('status')
-            .count('* as count')
-            .groupBy('status'),
-
-          // Estadísticas del mes actual
-          db('campaigns')
-            .where('tenant_id', tenantId)
-            .whereRaw('EXTRACT(MONTH FROM created_at) = EXTRACT(MONTH FROM CURRENT_DATE)')
-            .whereRaw('EXTRACT(YEAR FROM created_at) = EXTRACT(YEAR FROM CURRENT_DATE)')
-            .select(
-              db.raw('COUNT(*) as campaigns_this_month'),
-              db.raw('SUM(raised_amount) as raised_this_month')
-            )
+          tenantQuery.table('campaigns')
+            .sum('helped_families as total')
+            .where('status', 'completed')
             .first()
         ]);
 
-        stats = {
-          total: {
-            campaigns: parseInt(totalStats.total_campaigns) || 0,
-            raised: parseFloat(totalStats.total_raised) || 0,
-            target: parseFloat(totalStats.total_target) || 0,
-            familiesHelped: parseInt(totalStats.total_families_helped) || 0,
-            successRate: totalStats.total_target > 0 ? 
-              (parseFloat(totalStats.total_raised) / parseFloat(totalStats.total_target)) * 100 : 0
+        // Calcular métricas
+        const activeCount = activeCampaigns.length;
+        const completionRate = totalCampaigns > 0 ? (completedCampaigns / totalCampaigns) * 100 : 0;
+
+        // Obtener campañas que necesitan atención
+        const needsAttention = activeCampaigns.filter(campaign => {
+          const daysRemaining = campaign.getDaysRemaining();
+          const completion = campaign.getCompletionPercentage();
+          return daysRemaining <= 2 || (daysRemaining <= 7 && completion < 50);
+        });
+
+        dashboard = {
+          summary: {
+            activeCampaigns: activeCount,
+            totalCampaigns,
+            completedCampaigns,
+            completionRate: Math.round(completionRate),
+            totalRaised: parseFloat(totalRaised?.total || 0),
+            totalFamiliesHelped: parseInt(totalFamiliesHelped?.total || 0)
           },
-          byStatus: statusStats.reduce((acc, stat) => {
-            acc[stat.status] = parseInt(stat.count);
-            return acc;
-          }, {}),
-          thisMonth: {
-            campaigns: parseInt(monthlyStats.campaigns_this_month) || 0,
-            raised: parseFloat(monthlyStats.raised_this_month) || 0
-          }
+          activeCampaigns: activeCampaigns.map(c => c.toJSON()),
+          needsAttention: needsAttention.map(c => ({
+            ...c.toJSON(),
+            attentionReason: this.getAttentionReason(c)
+          })),
+          recentActivity: await this.getRecentActivity(tenantId)
         };
 
-        // Guardar en cache por 30 minutos
-        await cache.set(cacheKey, stats, 1800);
+        // Guardar en cache por 10 minutos
+        await cache.set(cacheKey, dashboard, 600);
       }
 
-      return stats;
+      return dashboard;
     } catch (error) {
-      logger.error('Error obteniendo estadísticas de campañas:', error);
+      logger.error('Error en CampaignService.getCampaignDashboard:', error);
       throw error;
     }
   }
 
-  // Limpiar cache de campañas
-  static async clearCampaignCache(tenantId) {
+  // Validar creación de campaña
+  static async validateCampaignCreation(data, tenantId) {
+    // Verificar que no haya demasiadas campañas activas
+    const activeCampaigns = await Campaign.getActiveCampaigns(tenantId);
+    
+    if (activeCampaigns.length >= 3) {
+      throw new Error('TOO_MANY_ACTIVE_CAMPAIGNS');
+    }
+
+    // Validar fechas
+    if (data.startDate && data.endDate) {
+      if (new Date(data.startDate) >= new Date(data.endDate)) {
+        throw new Error('INVALID_DATE_RANGE');
+      }
+    }
+
+    // Validar metas de productos
+    if (data.goals && Object.keys(data.goals).length === 0) {
+      throw new Error('EMPTY_GOALS');
+    }
+  }
+
+  // Validar actualización de campaña
+  static async validateCampaignUpdate(campaign, data, tenantId) {
+    // No permitir cambios en campañas completadas
+    if (campaign.status === 'completed') {
+      throw new Error('CAMPAIGN_COMPLETED');
+    }
+
+    // Validar cambios de estado
+    if (data.status && !this.isValidStatusTransition(campaign.status, data.status)) {
+      throw new Error('INVALID_STATUS_TRANSITION');
+    }
+  }
+
+  // Validar activación de campaña
+  static async validateCampaignActivation(campaign, tenantId) {
+    if (campaign.status !== 'draft') {
+      throw new Error('CAMPAIGN_NOT_DRAFT');
+    }
+
+    if (!campaign.goals || Object.keys(campaign.goals).length === 0) {
+      throw new Error('CAMPAIGN_NO_GOALS');
+    }
+
+    if (!campaign.title || campaign.title.trim().length === 0) {
+      throw new Error('CAMPAIGN_NO_TITLE');
+    }
+  }
+
+  // Validar permisos de actualización
+  static async validateUpdatePermissions(campaign, user, tenantId) {
+    // Solo el creador, coordinadores, párrocos y admins pueden actualizar
+    if (campaign.createdBy !== user.id && !user.hasAnyRole(['parroco', 'coordinador', 'admin'])) {
+      throw new Error('INSUFFICIENT_PERMISSIONS');
+    }
+  }
+
+  // Validar acceso de usuario
+  static async validateUserAccess(campaign, userId, tenantId) {
+    const tenantQuery = createTenantQuery(tenantId);
+    const user = await tenantQuery.findById('users', userId);
+    
+    if (!user || user.tenant_id !== tenantId) {
+      throw new Error('USER_NO_ACCESS');
+    }
+  }
+
+  // Verificar transiciones de estado válidas
+  static isValidStatusTransition(currentStatus, newStatus) {
+    const validTransitions = {
+      'draft': ['active', 'cancelled'],
+      'active': ['completed', 'cancelled'],
+      'completed': [], // No se puede cambiar desde completado
+      'cancelled': ['draft'] // Solo se puede reactivar como borrador
+    };
+
+    return validTransitions[currentStatus]?.includes(newStatus) || false;
+  }
+
+  // Obtener necesidades urgentes
+  static getUrgentNeeds(campaign) {
+    const progress = campaign.getProductProgress();
+    return progress
+      .filter(p => p.percentage < 50 && campaign.getDaysRemaining() <= 3)
+      .sort((a, b) => a.percentage - b.percentage)
+      .slice(0, 3);
+  }
+
+  // Generar mensaje de impacto
+  static generateImpactMessage(campaign) {
+    const completion = campaign.getCompletionPercentage();
+    const families = campaign.targetFamilies;
+
+    if (completion >= 100) {
+      return `¡Meta alcanzada! Ayudaremos a ${families} familias.`;
+    } else if (completion >= 75) {
+      return `¡Casi lo logramos! Solo falta ${Math.round(100 - completion)}% para ayudar a ${families} familias.`;
+    } else if (completion >= 50) {
+      return `Vamos por buen camino. Con tu ayuda alimentaremos a ${families} familias.`;
+    } else {
+      return `Tu donación puede marcar la diferencia para ${families} familias necesitadas.`;
+    }
+  }
+
+  // Obtener razón de atención
+  static getAttentionReason(campaign) {
+    const daysRemaining = campaign.getDaysRemaining();
+    const completion = campaign.getCompletionPercentage();
+
+    if (daysRemaining <= 1) {
+      return 'Termina mañana';
+    } else if (daysRemaining <= 2) {
+      return 'Termina pronto';
+    } else if (completion < 25 && daysRemaining <= 7) {
+      return 'Progreso lento';
+    } else if (completion < 50 && daysRemaining <= 3) {
+      return 'Necesita impulso';
+    }
+
+    return 'Requiere atención';
+  }
+
+  // Verificar hitos importantes
+  static async checkMilestones(campaign, tenantId) {
+    const completion = campaign.getCompletionPercentage();
+    const milestones = [25, 50, 75, 100];
+
+    for (const milestone of milestones) {
+      if (completion >= milestone) {
+        // Enviar notificación de hito (implementar después)
+        await this.sendMilestoneNotification(campaign, milestone, tenantId);
+      }
+    }
+  }
+
+  // Generar reporte de campaña
+  static async generateCampaignReport(campaign, tenantId) {
     try {
-      const cacheKeys = [
-        `active_campaigns:${tenantId}`,
-        `campaign_stats:${tenantId}`
-      ];
+      const stats = await campaign.getStats(tenantId);
+      const productProgress = campaign.getProductProgress();
 
-      await Promise.all(cacheKeys.map(key => cache.del(key)));
-
-      logger.info('Cache de campañas limpiado', { tenantId });
+      return {
+        campaign: campaign.toJSON(),
+        summary: {
+          ...stats,
+          duration: this.calculateDuration(campaign.startDate, campaign.endDate),
+          efficiency: stats.donations > 0 ? stats.uniqueDonors / stats.donations : 0
+        },
+        productBreakdown: productProgress,
+        timeline: await this.getCampaignTimeline(campaign.id, tenantId)
+      };
     } catch (error) {
-      logger.error('Error limpiando cache de campañas:', error);
+      logger.error('Error generando reporte de campaña:', error);
+      throw error;
+    }
+  }
+
+  // Calcular duración de campaña
+  static calculateDuration(startDate, endDate) {
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    const diffTime = Math.abs(end - start);
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  }
+
+  // Obtener actividad reciente
+  static async getRecentActivity(tenantId, limit = 10) {
+    try {
+      const tenantQuery = createTenantQuery(tenantId);
+      
+      const recentDonations = await tenantQuery.table('donations')
+        .join('campaigns', 'donations.campaign_id', 'campaigns.id')
+        .join('users', 'donations.user_id', 'users.id')
+        .select(
+          'donations.created_at',
+          'campaigns.title as campaign_title',
+          'users.name as donor_name',
+          'donations.estimated_value'
+        )
+        .orderBy('donations.created_at', 'desc')
+        .limit(limit);
+
+      return recentDonations.map(activity => ({
+        type: 'donation',
+        timestamp: activity.created_at,
+        message: `${activity.donor_name} donó $${activity.estimated_value} a "${activity.campaign_title}"`,
+        amount: activity.estimated_value
+      }));
+    } catch (error) {
+      logger.error('Error obteniendo actividad reciente:', error);
+      return [];
+    }
+  }
+
+  // Obtener timeline de campaña
+  static async getCampaignTimeline(campaignId, tenantId) {
+    try {
+      const tenantQuery = createTenantQuery(tenantId);
+      
+      const events = await tenantQuery.table('donations')
+        .where('campaign_id', campaignId)
+        .join('users', 'donations.user_id', 'users.id')
+        .select(
+          'donations.created_at',
+          'users.name as donor_name',
+          'donations.estimated_value',
+          'donations.items'
+        )
+        .orderBy('donations.created_at', 'asc');
+
+      return events.map(event => ({
+        timestamp: event.created_at,
+        type: 'donation',
+        donor: event.donor_name,
+        amount: event.estimated_value,
+        items: event.items
+      }));
+    } catch (error) {
+      logger.error('Error obteniendo timeline de campaña:', error);
+      return [];
+    }
+  }
+
+  // Enviar notificaciones de campaña (placeholder)
+  static async sendCampaignNotifications(campaign, event, tenantId) {
+    try {
+      // TODO: Implementar sistema de notificaciones
+      logger.info('Notificación de campaña enviada', {
+        campaignId: campaign.id,
+        tenantId,
+        event
+      });
+    } catch (error) {
+      logger.error('Error enviando notificaciones de campaña:', error);
+    }
+  }
+
+  // Enviar notificación de hito (placeholder)
+  static async sendMilestoneNotification(campaign, milestone, tenantId) {
+    try {
+      // TODO: Implementar notificación de hitos
+      logger.info('Notificación de hito enviada', {
+        campaignId: campaign.id,
+        tenantId,
+        milestone
+      });
+    } catch (error) {
+      logger.error('Error enviando notificación de hito:', error);
     }
   }
 }

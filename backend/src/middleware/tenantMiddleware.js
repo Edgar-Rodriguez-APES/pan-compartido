@@ -1,4 +1,5 @@
 const TenantService = require('../services/TenantService');
+const { createTenantQuery } = require('../utils/tenantQuery');
 const logger = require('../utils/logger');
 
 const tenantMiddleware = async (req, res, next) => {
@@ -35,6 +36,9 @@ const tenantMiddleware = async (req, res, next) => {
     // Agregar tenant al request
     req.tenant = tenant.toJSON();
     req.tenantId = tenant.id;
+
+    // Agregar utilidad de consultas con aislamiento de tenant
+    req.tenantQuery = createTenantQuery(tenant.id);
 
     logger.info('Tenant identificado', {
       tenantId: tenant.id,

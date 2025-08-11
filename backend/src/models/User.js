@@ -1,6 +1,7 @@
 const db = require('../config/database');
 const bcrypt = require('bcryptjs');
 const { cache } = require('../config/redis');
+const { createTenantQuery } = require('../utils/tenantQuery');
 const logger = require('../utils/logger');
 
 class User {

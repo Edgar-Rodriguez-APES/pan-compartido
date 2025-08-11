@@ -1,36 +1,56 @@
 const Product = require('../models/Product');
-const User = require('../models/User');
-const logger = require('../utils/logger');
+const ProductCategory = require('../models/ProductCategory');
 const { cache } = require('../config/redis');
+const logger = require('../utils/logger');
 
 class ProductService {
-  // Crear nuevo producto
-  static async createProduct(productData, createdBy) {
+  // Crear nueva categoría con validaciones
+  static async createCategory(data, createdBy) {
     try {
-      // Verificar permisos del usuario
-      const user = await User.findById(createdBy);
-      if (!user || !user.hasAnyRole(['admin'])) {
-        throw new Error('INSUFFICIENT_PERMISSIONS');
+      // Validar que el slug no esté en uso
+      const existingCategory = await ProductCategory.findBySlug(data.slug);
+      if (existingCategory) {
+        throw new Error('CATEGORY_SLUG_EXISTS');
       }
 
-      // Generar slug único
-      const slug = await Product.generateUniqueSlug(productData.name);
+      const category = await ProductCategory.create(data);
 
-      // Validar datos requeridos
-      if (!productData.name || !productData.category || !productData.unit) {
-        throw new Error('MISSING_REQUIRED_FIELDS');
-      }
-
-      // Crear producto
-      const product = await Product.create({
-        ...productData,
-        slug
+      logger.info('Categoría creada por servicio', {
+        categoryId: category.id,
+        name: category.name,
+        createdBy: createdBy?.id
       });
+
+      return category;
+    } catch (error) {
+      logger.error('Error en ProductService.createCategory:', error);
+      throw error;
+    }
+  }
+
+  // Crear nuevo producto con validaciones
+  static async createProduct(data, createdBy) {
+    try {
+      // Validar que el slug no esté en uso
+      const existingProduct = await Product.findBySlug(data.slug);
+      if (existingProduct) {
+        throw new Error('PRODUCT_SLUG_EXISTS');
+      }
+
+      // Validar que la categoría existe si se proporciona
+      if (data.categoryId) {
+        const category = await ProductCategory.findById(data.categoryId);
+        if (!category) {
+          throw new Error('CATEGORY_NOT_FOUND');
+        }
+      }
+
+      const product = await Product.create(data);
 
       logger.info('Producto creado por servicio', {
         productId: product.id,
         name: product.name,
-        createdBy
+        createdBy: createdBy?.id
       });
 
       return product;
@@ -40,143 +60,282 @@ class ProductService {
     }
   }
 
-  // Obtener producto por ID o slug
-  static async getProduct(identifier) {
+  // Obtener categorías con productos
+  static async getCategoriesWithProducts(options = {}) {
     try {
-      let product;
-
-      // Intentar buscar por UUID primero
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-      
-      if (uuidRegex.test(identifier)) {
-        product = await Product.findById(identifier);
-      } else {
-        product = await Product.findBySlug(identifier);
-      }
-
-      if (!product) {
-        throw new Error('PRODUCT_NOT_FOUND');
-      }
-
-      return product;
-    } catch (error) {
-      logger.error('Error en ProductService.getProduct:', error);
-      throw error;
-    }
-  }
-
-  // Obtener producto con estadísticas
-  static async getProductWithStats(identifier) {
-    try {
-      const product = await this.getProduct(identifier);
-      const stats = await product.getUsageStats();
-
-      return {
-        product: product.toJSON(),
-        stats
-      };
-    } catch (error) {
-      logger.error('Error en ProductService.getProductWithStats:', error);
-      throw error;
-    }
-  }
-
-  // Listar productos con filtros
-  static async listProducts(options = {}) {
-    try {
-      const result = await Product.findAll(options);
-
-      logger.info('Productos listados', {
-        page: options.page || 1,
-        total: result.pagination.total,
-        category: options.category || 'all'
+      const categories = await ProductCategory.getActive({
+        includeProductCount: true,
+        ...options
       });
 
-      return result;
-    } catch (error) {
-      logger.error('Error en ProductService.listProducts:', error);
-      throw error;
-    }
-  }
-
-  // Obtener productos por categoría
-  static async getProductsByCategory(category, activeOnly = true) {
-    try {
-      const products = await Product.findByCategory(category, activeOnly);
-
-      return products.map(product => product.toJSON());
-    } catch (error) {
-      logger.error('Error en ProductService.getProductsByCategory:', error);
-      throw error;
-    }
-  }
-
-  // Obtener todas las categorías
-  static async getCategories() {
-    try {
-      const categories = await Product.getCategories();
+      // Enriquecer con productos destacados si se solicita
+      if (options.includeFeaturedProducts) {
+        for (const category of categories) {
+          const products = await Product.findByCategory(category.id, {
+            limit: options.featuredProductsLimit || 5,
+            isActive: true,
+            orderBy: 'sort_order'
+          });
+          category.featuredProducts = products.products;
+        }
+      }
 
       return categories;
     } catch (error) {
-      logger.error('Error en ProductService.getCategories:', error);
+      logger.error('Error en ProductService.getCategoriesWithProducts:', error);
       throw error;
     }
   }
 
-  // Obtener productos populares
-  static async getPopularProducts(limit = 10) {
+  // Búsqueda inteligente de productos
+  static async searchProducts(query, options = {}) {
     try {
-      const products = await Product.getPopularProducts(limit);
+      const {
+        categoryId = null,
+        limit = 20,
+        includeCategory = true,
+        includeSuggestions = true
+      } = options;
 
-      return products.map(product => product.toJSON());
-    } catch (error) {
-      logger.error('Error en ProductService.getPopularProducts:', error);
-      throw error;
-    }
-  }
+      // Búsqueda principal
+      const products = await Product.search(query, {
+        categoryId,
+        limit,
+        includeCategory
+      });
 
-  // Buscar productos
-  static async searchProducts(searchTerm, options = {}) {
-    try {
-      if (!searchTerm || searchTerm.length < 2) {
-        throw new Error('SEARCH_TERM_TOO_SHORT');
+      let suggestions = [];
+      
+      // Generar sugerencias si no hay resultados o hay pocos
+      if (includeSuggestions && products.length < 3) {
+        suggestions = await this.generateSearchSuggestions(query, categoryId);
       }
 
-      const products = await Product.search(searchTerm, options);
-
-      return products.map(product => product.toJSON());
+      return {
+        products,
+        suggestions,
+        query,
+        totalResults: products.length
+      };
     } catch (error) {
       logger.error('Error en ProductService.searchProducts:', error);
       throw error;
     }
   }
 
-  // Actualizar producto
-  static async updateProduct(productId, updateData, updatedBy) {
+  // Generar sugerencias de búsqueda
+  static async generateSearchSuggestions(query, categoryId = null) {
+    try {
+      const cacheKey = `search_suggestions:${query}:${categoryId}`;
+      let suggestions = await cache.get(cacheKey);
+
+      if (!suggestions) {
+        // Buscar productos similares por nombre parcial
+        const similarProducts = await Product.findAll({
+          search: query.substring(0, Math.max(3, query.length - 2)),
+          categoryId,
+          limit: 5,
+          isActive: true
+        });
+
+        // Buscar por etiquetas populares
+        const popularTags = await this.getPopularTags(categoryId);
+        const tagSuggestions = popularTags
+          .filter(tag => tag.toLowerCase().includes(query.toLowerCase()))
+          .slice(0, 3);
+
+        suggestions = {
+          similarProducts: similarProducts.products.map(p => ({
+            id: p.id,
+            name: p.name,
+            category: p.categoryName || p.category
+          })),
+          tags: tagSuggestions,
+          categories: await this.getSuggestedCategories(query)
+        };
+
+        // Guardar en cache por 30 minutos
+        await cache.set(cacheKey, suggestions, 1800);
+      }
+
+      return suggestions;
+    } catch (error) {
+      logger.error('Error generando sugerencias:', error);
+      return { similarProducts: [], tags: [], categories: [] };
+    }
+  }
+
+  // Obtener etiquetas populares
+  static async getPopularTags(categoryId = null, limit = 20) {
+    try {
+      const cacheKey = `popular_tags:${categoryId}:${limit}`;
+      let tags = await cache.get(cacheKey);
+
+      if (!tags) {
+        let query = db('products')
+          .where('is_active', true)
+          .whereNotNull('tags')
+          .whereRaw("jsonb_array_length(tags) > 0");
+
+        if (categoryId) {
+          query = query.where('category_id', categoryId);
+        }
+
+        const products = await query.select('tags');
+        
+        // Contar frecuencia de etiquetas
+        const tagCount = {};
+        products.forEach(product => {
+          if (product.tags && Array.isArray(product.tags)) {
+            product.tags.forEach(tag => {
+              tagCount[tag] = (tagCount[tag] || 0) + 1;
+            });
+          }
+        });
+
+        // Ordenar por frecuencia y tomar los más populares
+        tags = Object.entries(tagCount)
+          .sort(([,a], [,b]) => b - a)
+          .slice(0, limit)
+          .map(([tag]) => tag);
+
+        // Guardar en cache por 1 hora
+        await cache.set(cacheKey, tags, 3600);
+      }
+
+      return tags;
+    } catch (error) {
+      logger.error('Error obteniendo etiquetas populares:', error);
+      return [];
+    }
+  }
+
+  // Obtener categorías sugeridas para búsqueda
+  static async getSuggestedCategories(query) {
+    try {
+      const categories = await ProductCategory.getActive();
+      
+      return categories
+        .filter(category => 
+          category.name.toLowerCase().includes(query.toLowerCase()) ||
+          category.description?.toLowerCase().includes(query.toLowerCase())
+        )
+        .slice(0, 3)
+        .map(category => ({
+          id: category.id,
+          name: category.name,
+          slug: category.slug,
+          icon: category.icon
+        }));
+    } catch (error) {
+      logger.error('Error obteniendo categorías sugeridas:', error);
+      return [];
+    }
+  }
+
+  // Obtener productos destacados
+  static async getFeaturedProducts(options = {}) {
+    try {
+      const {
+        limit = 10,
+        categoryId = null,
+        includeCategory = true
+      } = options;
+
+      const cacheKey = `featured_products:${limit}:${categoryId}:${includeCategory}`;
+      let products = await cache.get(cacheKey);
+
+      if (!products) {
+        // Criterios para productos destacados:
+        // 1. Productos con mejor precio estimado
+        // 2. Productos más utilizados en campañas
+        // 3. Productos con mejor información (imágenes, descripciones)
+        
+        const result = await Product.findAll({
+          categoryId,
+          isActive: true,
+          includeCategory,
+          orderBy: 'estimated_price',
+          orderDirection: 'asc',
+          limit: limit * 2 // Obtener más para filtrar
+        });
+
+        // Filtrar productos con información completa
+        const featuredProducts = result.products
+          .filter(product => 
+            product.description && 
+            product.estimatedPrice > 0 &&
+            product.imageUrl
+          )
+          .slice(0, limit);
+
+        products = featuredProducts;
+
+        // Guardar en cache por 1 hora
+        await cache.set(cacheKey, products, 3600);
+      }
+
+      return products;
+    } catch (error) {
+      logger.error('Error obteniendo productos destacados:', error);
+      throw error;
+    }
+  }
+
+  // Obtener productos por categoría con filtros avanzados
+  static async getProductsByCategory(categoryId, options = {}) {
+    try {
+      const category = await ProductCategory.findById(categoryId);
+      if (!category) {
+        throw new Error('CATEGORY_NOT_FOUND');
+      }
+
+      const products = await Product.findByCategory(categoryId, {
+        includeCategory: true,
+        ...options
+      });
+
+      return {
+        category: category.toJSON(),
+        products: products.products,
+        pagination: products.pagination
+      };
+    } catch (error) {
+      logger.error('Error en ProductService.getProductsByCategory:', error);
+      throw error;
+    }
+  }
+
+  // Actualizar producto con validaciones
+  static async updateProduct(productId, data, updatedBy) {
     try {
       const product = await Product.findById(productId);
-
       if (!product) {
         throw new Error('PRODUCT_NOT_FOUND');
       }
 
-      // Verificar permisos
-      const user = await User.findById(updatedBy);
-      if (!user || !user.hasAnyRole(['admin'])) {
-        throw new Error('INSUFFICIENT_PERMISSIONS');
+      // Validar slug único si se está cambiando
+      if (data.slug && data.slug !== product.slug) {
+        const existingProduct = await Product.findBySlug(data.slug);
+        if (existingProduct) {
+          throw new Error('PRODUCT_SLUG_EXISTS');
+        }
       }
 
-      // Generar nuevo slug si el nombre cambió
-      if (updateData.name && updateData.name !== product.name) {
-        updateData.slug = await Product.generateUniqueSlug(updateData.name, productId);
+      // Validar categoría si se está cambiando
+      if (data.categoryId && data.categoryId !== product.categoryId) {
+        const category = await ProductCategory.findById(data.categoryId);
+        if (!category) {
+          throw new Error('CATEGORY_NOT_FOUND');
+        }
       }
 
-      await product.update(updateData);
+      await product.update(data);
 
       logger.info('Producto actualizado por servicio', {
         productId: product.id,
-        updatedBy,
-        changes: Object.keys(updateData)
+        updatedBy: updatedBy?.id,
+        changes: Object.keys(data)
       });
 
       return product;
@@ -186,302 +345,267 @@ class ProductService {
     }
   }
 
-  // Activar/desactivar producto
-  static async toggleProductStatus(productId, isActive, updatedBy) {
+  // Actualizar categoría con validaciones
+  static async updateCategory(categoryId, data, updatedBy) {
     try {
-      const product = await Product.findById(productId);
-
-      if (!product) {
-        throw new Error('PRODUCT_NOT_FOUND');
+      const category = await ProductCategory.findById(categoryId);
+      if (!category) {
+        throw new Error('CATEGORY_NOT_FOUND');
       }
 
-      // Verificar permisos
-      const user = await User.findById(updatedBy);
-      if (!user || !user.hasAnyRole(['admin'])) {
-        throw new Error('INSUFFICIENT_PERMISSIONS');
+      // Validar slug único si se está cambiando
+      if (data.slug && data.slug !== category.slug) {
+        const existingCategory = await ProductCategory.findBySlug(data.slug);
+        if (existingCategory) {
+          throw new Error('CATEGORY_SLUG_EXISTS');
+        }
       }
 
-      await product.update({ isActive });
+      await category.update(data);
 
-      logger.info('Estado de producto cambiado', {
-        productId: product.id,
-        newStatus: isActive,
-        updatedBy
+      logger.info('Categoría actualizada por servicio', {
+        categoryId: category.id,
+        updatedBy: updatedBy?.id,
+        changes: Object.keys(data)
       });
 
-      return product;
+      return category;
     } catch (error) {
-      logger.error('Error en ProductService.toggleProductStatus:', error);
+      logger.error('Error en ProductService.updateCategory:', error);
       throw error;
     }
   }
 
-  // Obtener productos recomendados para una campaña
-  static async getRecommendedProducts(campaignGoals) {
+  // Eliminar producto con validaciones
+  static async deleteProduct(productId, deletedBy) {
     try {
-      if (!campaignGoals || Object.keys(campaignGoals).length === 0) {
-        return [];
+      const product = await Product.findById(productId);
+      if (!product) {
+        throw new Error('PRODUCT_NOT_FOUND');
       }
 
-      const productNames = Object.keys(campaignGoals);
-      const products = [];
+      // Verificar si el producto está siendo usado en campañas activas
+      const db = require('../config/database');
+      const activeCampaigns = await db('campaigns')
+        .where('status', 'active')
+        .whereRaw('goals ? ?', [productId])
+        .count('* as count')
+        .first();
 
-      for (let productName of productNames) {
+      if (parseInt(activeCampaigns.count) > 0) {
+        throw new Error('PRODUCT_IN_USE');
+      }
+
+      await product.delete();
+
+      logger.info('Producto eliminado por servicio', {
+        productId: product.id,
+        deletedBy: deletedBy?.id
+      });
+
+      return true;
+    } catch (error) {
+      logger.error('Error en ProductService.deleteProduct:', error);
+      throw error;
+    }
+  }
+
+  // Eliminar categoría con validaciones
+  static async deleteCategory(categoryId, deletedBy) {
+    try {
+      const category = await ProductCategory.findById(categoryId);
+      if (!category) {
+        throw new Error('CATEGORY_NOT_FOUND');
+      }
+
+      await category.delete();
+
+      logger.info('Categoría eliminada por servicio', {
+        categoryId: category.id,
+        deletedBy: deletedBy?.id
+      });
+
+      return true;
+    } catch (error) {
+      logger.error('Error en ProductService.deleteCategory:', error);
+      throw error;
+    }
+  }
+
+  // Obtener estadísticas del catálogo
+  static async getCatalogStats() {
+    try {
+      const cacheKey = 'catalog_stats';
+      let stats = await cache.get(cacheKey);
+
+      if (!stats) {
+        const db = require('../config/database');
+        
+        const [
+          totalProducts,
+          activeProducts,
+          totalCategories,
+          activeCategories,
+          avgPrice,
+          productsWithImages,
+          productsWithNutrition
+        ] = await Promise.all([
+          db('products').count('* as count').first(),
+          db('products').where('is_active', true).count('* as count').first(),
+          db('product_categories').count('* as count').first(),
+          db('product_categories').where('is_active', true).count('* as count').first(),
+          db('products').where('is_active', true).avg('estimated_price as avg').first(),
+          db('products').where('is_active', true).whereNotNull('image_url').count('* as count').first(),
+          db('products').where('is_active', true).whereRaw("nutritional_info != '{}'").count('* as count').first()
+        ]);
+
+        stats = {
+          products: {
+            total: parseInt(totalProducts.count) || 0,
+            active: parseInt(activeProducts.count) || 0,
+            withImages: parseInt(productsWithImages.count) || 0,
+            withNutrition: parseInt(productsWithNutrition.count) || 0
+          },
+          categories: {
+            total: parseInt(totalCategories.count) || 0,
+            active: parseInt(activeCategories.count) || 0
+          },
+          pricing: {
+            averagePrice: parseFloat(avgPrice.avg) || 0
+          }
+        };
+
+        // Guardar en cache por 1 hora
+        await cache.set(cacheKey, stats, 3600);
+      }
+
+      return stats;
+    } catch (error) {
+      logger.error('Error obteniendo estadísticas del catálogo:', error);
+      throw error;
+    }
+  }
+
+  // Importar productos desde CSV/JSON
+  static async importProducts(data, importedBy) {
+    try {
+      const results = {
+        success: 0,
+        errors: 0,
+        skipped: 0,
+        details: []
+      };
+
+      for (const productData of data) {
         try {
-          // Buscar productos que coincidan con el nombre
-          const matchingProducts = await Product.search(productName, {
-            limit: 3,
-            activeOnly: true
+          // Validar datos mínimos
+          if (!productData.name || !productData.slug) {
+            results.errors++;
+            results.details.push({
+              product: productData.name || 'Sin nombre',
+              error: 'Faltan campos requeridos (name, slug)'
+            });
+            continue;
+          }
+
+          // Verificar si ya existe
+          const existing = await Product.findBySlug(productData.slug);
+          if (existing) {
+            results.skipped++;
+            results.details.push({
+              product: productData.name,
+              message: 'Producto ya existe'
+            });
+            continue;
+          }
+
+          // Crear producto
+          await Product.create(productData);
+          results.success++;
+          results.details.push({
+            product: productData.name,
+            message: 'Importado exitosamente'
           });
 
-          products.push(...matchingProducts);
         } catch (error) {
-          logger.warn('Error buscando producto recomendado:', {
-            productName,
+          results.errors++;
+          results.details.push({
+            product: productData.name || 'Sin nombre',
             error: error.message
           });
         }
       }
 
-      // Eliminar duplicados
-      const uniqueProducts = products.filter((product, index, self) => 
-        index === self.findIndex(p => p.id === product.id)
-      );
+      logger.info('Importación de productos completada', {
+        importedBy: importedBy?.id,
+        results
+      });
 
-      return uniqueProducts.map(product => product.toJSON());
+      return results;
     } catch (error) {
-      logger.error('Error en ProductService.getRecommendedProducts:', error);
+      logger.error('Error en importación de productos:', error);
       throw error;
     }
   }
 
-  // Obtener productos más necesitados (basado en campañas activas)
-  static async getMostNeededProducts(limit = 10) {
+  // Exportar productos a CSV/JSON
+  static async exportProducts(format = 'json', options = {}) {
     try {
-      const cacheKey = `most_needed_products:${limit}`;
-      let products = await cache.get(cacheKey);
+      const {
+        categoryId = null,
+        isActive = true,
+        includeCategory = true
+      } = options;
 
-      if (!products) {
-        const db = require('../config/database');
+      const result = await Product.findAll({
+        categoryId,
+        isActive,
+        includeCategory,
+        limit: 10000 // Límite alto para exportación
+      });
+
+      const products = result.products.map(product => {
+        const exported = product.toJSON();
         
-        // Obtener productos más necesitados de campañas activas
-        const neededProducts = await db('campaigns')
-          .where('status', 'active')
-          .where('start_date', '<=', new Date())
-          .where('end_date', '>=', new Date())
-          .select('goals', 'current_progress')
-          .then(campaigns => {
-            const productNeeds = {};
+        // Limpiar campos no necesarios para exportación
+        delete exported.createdAt;
+        delete exported.updatedAt;
+        delete exported.isNearExpiry;
+        delete exported.isExpired;
+        
+        return exported;
+      });
 
-            campaigns.forEach(campaign => {
-              const goals = campaign.goals || {};
-              const progress = campaign.current_progress || {};
-
-              Object.keys(goals).forEach(productName => {
-                const needed = goals[productName]?.needed || 0;
-                const received = progress[productName]?.received || 0;
-                const remaining = Math.max(0, needed - received);
-
-                if (remaining > 0) {
-                  if (!productNeeds[productName]) {
-                    productNeeds[productName] = {
-                      name: productName,
-                      totalNeeded: 0,
-                      totalReceived: 0,
-                      totalRemaining: 0,
-                      unit: goals[productName]?.unit || 'unidades'
-                    };
-                  }
-
-                  productNeeds[productName].totalNeeded += needed;
-                  productNeeds[productName].totalReceived += received;
-                  productNeeds[productName].totalRemaining += remaining;
-                }
-              });
-            });
-
-            return Object.values(productNeeds)
-              .sort((a, b) => b.totalRemaining - a.totalRemaining)
-              .slice(0, limit);
-          });
-
-        // Buscar productos correspondientes
-        const productPromises = neededProducts.map(async (need) => {
-          try {
-            const matchingProducts = await Product.search(need.name, {
-              limit: 1,
-              activeOnly: true
-            });
-
-            if (matchingProducts.length > 0) {
-              return {
-                ...matchingProducts[0].toJSON(),
-                needInfo: need
-              };
-            }
-
-            return {
-              name: need.name,
-              needInfo: need,
-              isVirtual: true // Producto que no existe en el catálogo pero se necesita
-            };
-          } catch (error) {
-            return {
-              name: need.name,
-              needInfo: need,
-              isVirtual: true
-            };
-          }
-        });
-
-        products = await Promise.all(productPromises);
-
-        // Guardar en cache por 30 minutos
-        await cache.set(cacheKey, products, 1800);
+      if (format === 'csv') {
+        return this.convertToCSV(products);
       }
 
       return products;
     } catch (error) {
-      logger.error('Error en ProductService.getMostNeededProducts:', error);
+      logger.error('Error exportando productos:', error);
       throw error;
     }
   }
 
-  // Sincronizar productos con campañas activas
-  static async syncProductsWithCampaigns() {
-    try {
-      const db = require('../config/database');
-      
-      // Obtener productos únicos de campañas activas
-      const campaignProducts = await db('campaigns')
-        .where('status', 'active')
-        .select('goals')
-        .then(campaigns => {
-          const productSet = new Set();
+  // Convertir datos a CSV
+  static convertToCSV(data) {
+    if (!data.length) return '';
 
-          campaigns.forEach(campaign => {
-            const goals = campaign.goals || {};
-            Object.keys(goals).forEach(productName => {
-              productSet.add(productName.toLowerCase());
-            });
-          });
-
-          return Array.from(productSet);
-        });
-
-      let createdCount = 0;
-
-      // Crear productos que no existen
-      for (let productName of campaignProducts) {
-        const existing = await Product.search(productName, { limit: 1 });
-        
-        if (existing.length === 0) {
-          try {
-            // Inferir categoría basada en el nombre
-            const category = this.inferProductCategory(productName);
-            const unit = this.inferProductUnit(productName);
-
-            await Product.create({
-              name: productName.charAt(0).toUpperCase() + productName.slice(1),
-              slug: await Product.generateUniqueSlug(productName),
-              category,
-              description: `Producto agregado automáticamente desde campañas`,
-              unit,
-              standardPackage: 1,
-              estimatedPrice: 0,
-              isActive: true
-            });
-
-            createdCount++;
-          } catch (error) {
-            logger.warn('Error creando producto automáticamente:', {
-              productName,
-              error: error.message
-            });
+    const headers = Object.keys(data[0]);
+    const csvContent = [
+      headers.join(','),
+      ...data.map(row => 
+        headers.map(header => {
+          const value = row[header];
+          if (typeof value === 'object') {
+            return `"${JSON.stringify(value).replace(/"/g, '""')}"`;
           }
-        }
-      }
+          return `"${String(value).replace(/"/g, '""')}"`;
+        }).join(',')
+      )
+    ].join('\n');
 
-      logger.info('Sincronización de productos completada', {
-        campaignProducts: campaignProducts.length,
-        createdProducts: createdCount
-      });
-
-      return { campaignProducts: campaignProducts.length, createdProducts: createdCount };
-    } catch (error) {
-      logger.error('Error en ProductService.syncProductsWithCampaigns:', error);
-      throw error;
-    }
-  }
-
-  // Inferir categoría de producto basada en el nombre
-  static inferProductCategory(productName) {
-    const name = productName.toLowerCase();
-    
-    const categoryKeywords = {
-      'granos': ['arroz', 'frijol', 'lenteja', 'garbanzo', 'quinoa', 'avena'],
-      'aceites': ['aceite', 'manteca', 'margarina'],
-      'pastas': ['pasta', 'espagueti', 'macarron', 'fideos'],
-      'enlatados': ['atun', 'sardina', 'conserva', 'lata'],
-      'endulzantes': ['azucar', 'miel', 'panela'],
-      'condimentos': ['sal', 'pimienta', 'comino', 'oregano'],
-      'lacteos': ['leche', 'queso', 'yogurt'],
-      'carnes': ['pollo', 'carne', 'pescado', 'cerdo'],
-      'frutas': ['manzana', 'banana', 'naranja', 'fruta'],
-      'verduras': ['tomate', 'cebolla', 'zanahoria', 'verdura'],
-      'bebidas': ['jugo', 'gaseosa', 'agua'],
-      'panaderia': ['pan', 'galleta', 'torta'],
-      'limpieza': ['jabon', 'detergente', 'limpiador'],
-      'higiene': ['champu', 'pasta dental', 'papel higienico']
-    };
-
-    for (let [category, keywords] of Object.entries(categoryKeywords)) {
-      if (keywords.some(keyword => name.includes(keyword))) {
-        return category;
-      }
-    }
-
-    return 'otros';
-  }
-
-  // Inferir unidad de producto basada en el nombre
-  static inferProductUnit(productName) {
-    const name = productName.toLowerCase();
-    
-    if (name.includes('aceite') || name.includes('leche') || name.includes('jugo')) {
-      return 'litros';
-    }
-    
-    if (name.includes('arroz') || name.includes('azucar') || name.includes('sal')) {
-      return 'kg';
-    }
-    
-    if (name.includes('pasta') || name.includes('galleta')) {
-      return 'paquetes';
-    }
-    
-    if (name.includes('atun') || name.includes('sardina')) {
-      return 'latas';
-    }
-
-    return 'unidades';
-  }
-
-  // Limpiar cache de productos
-  static async clearProductCache() {
-    try {
-      const cacheKeys = [
-        'product_categories',
-        'popular_products:10',
-        'most_needed_products:10'
-      ];
-
-      await Promise.all(cacheKeys.map(key => cache.del(key)));
-
-      logger.info('Cache de productos limpiado');
-    } catch (error) {
-      logger.error('Error limpiando cache de productos:', error);
-    }
+    return csvContent;
   }
 }
 

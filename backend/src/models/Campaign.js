@@ -1,5 +1,6 @@
 const db = require('../config/database');
 const { cache } = require('../config/redis');
+const { createTenantQuery } = require('../utils/tenantQuery');
 const logger = require('../utils/logger');
 
 class Campaign {
@@ -15,41 +16,47 @@ class Campaign {
     this.frequency = data.frequency;
     this.startDate = data.start_date;
     this.endDate = data.end_date;
-    this.targetAmount = data.target_amount;
-    this.raisedAmount = data.raised_amount;
-    this.targetFamilies = data.target_families;
-    this.helpedFamilies = data.helped_families;
+    this.targetAmount = parseFloat(data.target_amount) || 0;
+    this.raisedAmount = parseFloat(data.raised_amount) || 0;
+    this.targetFamilies = parseInt(data.target_families) || 0;
+    this.helpedFamilies = parseInt(data.helped_families) || 0;
     this.createdAt = data.created_at;
     this.updatedAt = data.updated_at;
   }
 
   // Crear nueva campaña
-  static async create(data) {
+  static async create(data, tenantId) {
     try {
-      const [campaign] = await db('campaigns')
-        .insert({
-          tenant_id: data.tenantId,
-          created_by: data.createdBy,
-          title: data.title,
-          description: data.description,
-          goals: data.goals || {},
-          current_progress: {},
-          status: data.status || 'draft',
-          frequency: data.frequency || 'weekly',
-          start_date: data.startDate,
-          end_date: data.endDate,
-          target_amount: data.targetAmount || 0,
-          raised_amount: 0,
-          target_families: data.targetFamilies || 0,
-          helped_families: 0
-        })
-        .returning('*');
+      const tenantQuery = createTenantQuery(tenantId);
+
+      // Calcular fechas automáticamente si no se proporcionan
+      const startDate = data.startDate || new Date();
+      const endDate = data.endDate || this.calculateEndDate(startDate, data.frequency || 'weekly');
+
+      // Calcular monto objetivo basado en las metas de productos
+      const targetAmount = data.targetAmount || this.calculateTargetAmount(data.goals || {});
+
+      const [campaign] = await tenantQuery.insert('campaigns', {
+        created_by: data.createdBy,
+        title: data.title,
+        description: data.description,
+        goals: data.goals || {},
+        current_progress: {},
+        status: data.status || 'draft',
+        frequency: data.frequency || 'weekly',
+        start_date: startDate,
+        end_date: endDate,
+        target_amount: targetAmount,
+        raised_amount: 0,
+        target_families: data.targetFamilies || 0,
+        helped_families: 0
+      }).returning('*');
 
       logger.info('Campaña creada', {
         campaignId: campaign.id,
+        tenantId,
         title: campaign.title,
-        tenantId: campaign.tenant_id,
-        createdBy: campaign.created_by
+        createdBy: data.createdBy
       });
 
       return new Campaign(campaign);
@@ -60,19 +67,18 @@ class Campaign {
   }
 
   // Buscar campaña por ID
-  static async findById(id) {
+  static async findById(id, tenantId) {
     try {
-      const cacheKey = `campaign:${id}`;
+      const cacheKey = `campaign:${tenantId}:${id}`;
       let campaignData = await cache.get(cacheKey);
 
       if (!campaignData) {
-        campaignData = await db('campaigns')
-          .where('id', id)
-          .first();
+        const tenantQuery = createTenantQuery(tenantId);
+        campaignData = await tenantQuery.findById('campaigns', id);
 
         if (campaignData) {
-          // Guardar en cache por 30 minutos
-          await cache.set(cacheKey, campaignData, 1800);
+          // Guardar en cache por 15 minutos
+          await cache.set(cacheKey, campaignData, 900);
         }
       }
 
@@ -94,12 +100,12 @@ class Campaign {
         search = null,
         orderBy = 'created_at',
         orderDirection = 'desc',
-        includeStats = false
+        dateFrom = null,
+        dateTo = null
       } = options;
 
-      const offset = (page - 1) * limit;
-      let query = db('campaigns')
-        .where('tenant_id', tenantId);
+      const tenantQuery = createTenantQuery(tenantId);
+      let query = tenantQuery.table('campaigns').select('*');
 
       // Filtros
       if (status) {
@@ -117,30 +123,27 @@ class Campaign {
         });
       }
 
+      if (dateFrom) {
+        query = query.where('start_date', '>=', dateFrom);
+      }
+
+      if (dateTo) {
+        query = query.where('end_date', '<=', dateTo);
+      }
+
       // Obtener total para paginación
       const totalQuery = query.clone();
       const [{ count: total }] = await totalQuery.count('* as count');
 
       // Obtener resultados paginados
-      let selectQuery = query
-        .select('*')
+      const offset = (page - 1) * limit;
+      const campaigns = await query
         .orderBy(orderBy, orderDirection)
         .limit(limit)
         .offset(offset);
 
-      const campaigns = await selectQuery;
-
-      const campaignObjects = campaigns.map(campaign => new Campaign(campaign));
-
-      // Incluir estadísticas si se solicita
-      if (includeStats) {
-        for (let campaign of campaignObjects) {
-          campaign.stats = await campaign.getStats();
-        }
-      }
-
       return {
-        campaigns: campaignObjects,
+        campaigns: campaigns.map(campaign => new Campaign(campaign)),
         pagination: {
           page,
           limit,
@@ -155,14 +158,14 @@ class Campaign {
   }
 
   // Obtener campañas activas
-  static async findActiveCampaigns(tenantId) {
+  static async getActiveCampaigns(tenantId) {
     try {
-      const cacheKey = `active_campaigns:${tenantId}`;
+      const cacheKey = `campaigns:${tenantId}:active`;
       let campaigns = await cache.get(cacheKey);
 
       if (!campaigns) {
-        const campaignData = await db('campaigns')
-          .where('tenant_id', tenantId)
+        const tenantQuery = createTenantQuery(tenantId);
+        const campaignData = await tenantQuery.table('campaigns')
           .where('status', 'active')
           .where('start_date', '<=', new Date())
           .where('end_date', '>=', new Date())
@@ -170,8 +173,8 @@ class Campaign {
 
         campaigns = campaignData.map(campaign => new Campaign(campaign));
 
-        // Guardar en cache por 15 minutos
-        await cache.set(cacheKey, campaigns, 900);
+        // Guardar en cache por 5 minutos
+        await cache.set(cacheKey, campaigns, 300);
       }
 
       return campaigns;
@@ -182,13 +185,18 @@ class Campaign {
   }
 
   // Actualizar campaña
-  async update(data) {
+  async update(data, tenantId) {
     try {
+      const tenantQuery = createTenantQuery(tenantId);
       const updateData = {};
 
       if (data.title !== undefined) updateData.title = data.title;
       if (data.description !== undefined) updateData.description = data.description;
-      if (data.goals !== undefined) updateData.goals = data.goals;
+      if (data.goals !== undefined) {
+        updateData.goals = data.goals;
+        // Recalcular monto objetivo si cambian las metas
+        updateData.target_amount = Campaign.calculateTargetAmount(data.goals);
+      }
       if (data.status !== undefined) updateData.status = data.status;
       if (data.frequency !== undefined) updateData.frequency = data.frequency;
       if (data.startDate !== undefined) updateData.start_date = data.startDate;
@@ -198,19 +206,20 @@ class Campaign {
 
       updateData.updated_at = new Date();
 
-      const [updatedCampaign] = await db('campaigns')
-        .where('id', this.id)
-        .update(updateData)
-        .returning('*');
+      const [updatedCampaign] = await tenantQuery.update('campaigns', 
+        updateData, 
+        { id: this.id }
+      ).returning('*');
 
       // Actualizar propiedades del objeto actual
       Object.assign(this, new Campaign(updatedCampaign));
 
       // Limpiar cache
-      await this.clearCache();
+      await this.clearCache(tenantId);
 
       logger.info('Campaña actualizada', {
         campaignId: this.id,
+        tenantId,
         changes: Object.keys(updateData)
       });
 
@@ -222,64 +231,42 @@ class Campaign {
   }
 
   // Actualizar progreso de la campaña
-  async updateProgress() {
+  async updateProgress(productId, quantity, unit, tenantId) {
     try {
-      // Calcular progreso actual basado en donaciones
-      const [donationStats, paymentStats] = await Promise.all([
-        // Estadísticas de donaciones
-        db('donations')
-          .where('campaign_id', this.id)
-          .where('status', 'received')
-          .select(
-            db.raw('COUNT(*) as total_donations'),
-            db.raw('jsonb_agg(items) as all_items')
-          )
-          .first(),
+      const tenantQuery = createTenantQuery(tenantId);
 
-        // Estadísticas de pagos
-        db('payments')
-          .join('donations', 'payments.donation_id', 'donations.id')
-          .where('donations.campaign_id', this.id)
-          .where('payments.status', 'completed')
-          .sum('payments.donation_amount as total_raised')
-          .first()
-      ]);
-
-      // Procesar items donados
-      const currentProgress = {};
-      if (donationStats.all_items) {
-        const allItems = donationStats.all_items.flat();
-        allItems.forEach(item => {
-          if (item && item.name) {
-            const key = item.name.toLowerCase();
-            if (!currentProgress[key]) {
-              currentProgress[key] = { received: 0, unit: item.unit || 'unidades' };
-            }
-            currentProgress[key].received += parseFloat(item.quantity) || 0;
-          }
-        });
+      // Actualizar progreso actual
+      const newProgress = { ...this.currentProgress };
+      if (!newProgress[productId]) {
+        newProgress[productId] = { received: 0, unit };
       }
+      newProgress[productId].received += quantity;
+
+      // Calcular nuevo monto recaudado basado en el progreso
+      const newRaisedAmount = this.calculateRaisedAmount(newProgress);
 
       // Actualizar en base de datos
-      await db('campaigns')
-        .where('id', this.id)
-        .update({
-          current_progress: currentProgress,
-          raised_amount: parseFloat(paymentStats.total_raised) || 0,
-          updated_at: new Date()
-        });
+      const [updatedCampaign] = await tenantQuery.update('campaigns', {
+        current_progress: newProgress,
+        raised_amount: newRaisedAmount,
+        updated_at: new Date()
+      }, { id: this.id }).returning('*');
 
-      // Actualizar propiedades del objeto
-      this.currentProgress = currentProgress;
-      this.raisedAmount = parseFloat(paymentStats.total_raised) || 0;
+      // Actualizar objeto actual
+      Object.assign(this, new Campaign(updatedCampaign));
+
+      // Verificar si se completó la campaña
+      await this.checkCompletion(tenantId);
 
       // Limpiar cache
-      await this.clearCache();
+      await this.clearCache(tenantId);
 
       logger.info('Progreso de campaña actualizado', {
         campaignId: this.id,
-        raisedAmount: this.raisedAmount,
-        progressItems: Object.keys(currentProgress).length
+        tenantId,
+        productId,
+        quantity,
+        newProgress: newProgress[productId]
       });
 
       return this;
@@ -289,189 +276,244 @@ class Campaign {
     }
   }
 
-  // Obtener estadísticas de la campaña
-  async getStats() {
+  // Activar campaña
+  async activate(tenantId) {
     try {
-      const cacheKey = `campaign:${this.id}:stats`;
-      let stats = await cache.get(cacheKey);
-
-      if (!stats) {
-        const [donationStats, donorStats, progressStats] = await Promise.all([
-          // Estadísticas de donaciones
-          db('donations')
-            .where('campaign_id', this.id)
-            .select(
-              db.raw('COUNT(*) as total_donations'),
-              db.raw('COUNT(CASE WHEN status = \'received\' THEN 1 END) as received_donations'),
-              db.raw('COUNT(CASE WHEN status = \'pending\' THEN 1 END) as pending_donations')
-            )
-            .first(),
-
-          // Estadísticas de donantes
-          db('donations')
-            .where('campaign_id', this.id)
-            .countDistinct('user_id as unique_donors')
-            .first(),
-
-          // Progreso por objetivos
-          this.calculateGoalProgress()
-        ]);
-
-        stats = {
-          totalDonations: parseInt(donationStats.total_donations) || 0,
-          receivedDonations: parseInt(donationStats.received_donations) || 0,
-          pendingDonations: parseInt(donationStats.pending_donations) || 0,
-          uniqueDonors: parseInt(donorStats.unique_donors) || 0,
-          raisedAmount: this.raisedAmount || 0,
-          targetAmount: this.targetAmount || 0,
-          progressPercentage: this.targetAmount > 0 ? (this.raisedAmount / this.targetAmount) * 100 : 0,
-          goalProgress: progressStats,
-          daysRemaining: this.endDate ? Math.max(0, Math.ceil((new Date(this.endDate) - new Date()) / (1000 * 60 * 60 * 24))) : null
-        };
-
-        // Guardar en cache por 10 minutos
-        await cache.set(cacheKey, stats, 600);
+      if (this.status !== 'draft') {
+        throw new Error('CAMPAIGN_NOT_DRAFT');
       }
 
-      return stats;
-    } catch (error) {
-      logger.error('Error obteniendo estadísticas de campaña:', error);
-      throw error;
-    }
-  }
+      await this.update({ status: 'active' }, tenantId);
 
-  // Calcular progreso de objetivos específicos
-  async calculateGoalProgress() {
-    try {
-      const goalProgress = {};
-
-      if (this.goals && Object.keys(this.goals).length > 0) {
-        Object.keys(this.goals).forEach(goalKey => {
-          const goal = this.goals[goalKey];
-          const current = this.currentProgress[goalKey] || { received: 0 };
-          
-          goalProgress[goalKey] = {
-            needed: goal.needed || 0,
-            received: current.received || 0,
-            unit: goal.unit || current.unit || 'unidades',
-            percentage: goal.needed > 0 ? (current.received / goal.needed) * 100 : 0,
-            remaining: Math.max(0, (goal.needed || 0) - (current.received || 0))
-          };
-        });
-      }
-
-      return goalProgress;
-    } catch (error) {
-      logger.error('Error calculando progreso de objetivos:', error);
-      return {};
-    }
-  }
-
-  // Verificar si la campaña está activa
-  isActive() {
-    const now = new Date();
-    const startDate = new Date(this.startDate);
-    const endDate = new Date(this.endDate);
-    
-    return this.status === 'active' && 
-           now >= startDate && 
-           now <= endDate;
-  }
-
-  // Verificar si la campaña ha terminado
-  isExpired() {
-    const now = new Date();
-    const endDate = new Date(this.endDate);
-    
-    return now > endDate;
-  }
-
-  // Verificar si se pueden hacer donaciones
-  canReceiveDonations() {
-    return this.isActive() && this.status !== 'completed';
-  }
-
-  // Marcar campaña como completada
-  async markAsCompleted() {
-    try {
-      await this.update({ status: 'completed' });
-      
-      logger.info('Campaña marcada como completada', {
+      logger.info('Campaña activada', {
         campaignId: this.id,
+        tenantId,
         title: this.title
       });
 
       return this;
     } catch (error) {
-      logger.error('Error marcando campaña como completada:', error);
+      logger.error('Error activando campaña:', error);
       throw error;
     }
   }
 
-  // Obtener donaciones de la campaña
-  async getDonations(options = {}) {
+  // Completar campaña
+  async complete(tenantId) {
     try {
-      const {
-        page = 1,
-        limit = 20,
-        status = null,
-        orderBy = 'created_at',
-        orderDirection = 'desc'
-      } = options;
-
-      const offset = (page - 1) * limit;
-      let query = db('donations')
-        .join('users', 'donations.user_id', 'users.id')
-        .where('donations.campaign_id', this.id)
-        .select(
-          'donations.*',
-          'users.name as donor_name',
-          'users.email as donor_email'
-        );
-
-      if (status) {
-        query = query.where('donations.status', status);
+      if (this.status !== 'active') {
+        throw new Error('CAMPAIGN_NOT_ACTIVE');
       }
 
-      // Obtener total
-      const totalQuery = query.clone();
-      const [{ count: total }] = await totalQuery.count('donations.id as count');
+      await this.update({ status: 'completed' }, tenantId);
 
-      // Obtener resultados paginados
-      const donations = await query
-        .orderBy(`donations.${orderBy}`, orderDirection)
-        .limit(limit)
-        .offset(offset);
+      logger.info('Campaña completada', {
+        campaignId: this.id,
+        tenantId,
+        title: this.title,
+        raisedAmount: this.raisedAmount,
+        targetAmount: this.targetAmount
+      });
 
-      return {
-        donations,
-        pagination: {
-          page,
-          limit,
-          total: parseInt(total),
-          pages: Math.ceil(total / limit)
-        }
-      };
+      return this;
     } catch (error) {
-      logger.error('Error obteniendo donaciones de campaña:', error);
+      logger.error('Error completando campaña:', error);
       throw error;
     }
+  }
+
+  // Cancelar campaña
+  async cancel(tenantId, reason = null) {
+    try {
+      if (this.status === 'completed') {
+        throw new Error('CAMPAIGN_ALREADY_COMPLETED');
+      }
+
+      await this.update({ status: 'cancelled' }, tenantId);
+
+      logger.info('Campaña cancelada', {
+        campaignId: this.id,
+        tenantId,
+        title: this.title,
+        reason
+      });
+
+      return this;
+    } catch (error) {
+      logger.error('Error cancelando campaña:', error);
+      throw error;
+    }
+  }
+
+  // Verificar si la campaña se completó automáticamente
+  async checkCompletion(tenantId) {
+    try {
+      if (this.status !== 'active') return;
+
+      const completionPercentage = this.getCompletionPercentage();
+      
+      // Completar automáticamente si se alcanza el 100% o si pasó la fecha de fin
+      if (completionPercentage >= 100 || new Date() > new Date(this.endDate)) {
+        await this.complete(tenantId);
+      }
+    } catch (error) {
+      logger.error('Error verificando completación de campaña:', error);
+    }
+  }
+
+  // Calcular porcentaje de completación
+  getCompletionPercentage() {
+    if (this.targetAmount === 0) return 0;
+    return Math.min((this.raisedAmount / this.targetAmount) * 100, 100);
+  }
+
+  // Obtener progreso por producto
+  getProductProgress() {
+    const progress = [];
+    
+    Object.keys(this.goals).forEach(productId => {
+      const goal = this.goals[productId];
+      const current = this.currentProgress[productId] || { received: 0, unit: goal.unit };
+      
+      progress.push({
+        productId,
+        needed: goal.needed,
+        received: current.received,
+        unit: goal.unit,
+        percentage: goal.needed > 0 ? Math.min((current.received / goal.needed) * 100, 100) : 0,
+        remaining: Math.max(goal.needed - current.received, 0),
+        estimatedPrice: goal.estimated_price || 0
+      });
+    });
+
+    return progress;
+  }
+
+  // Verificar si la campaña está activa
+  isActive() {
+    const now = new Date();
+    return this.status === 'active' && 
+           new Date(this.startDate) <= now && 
+           new Date(this.endDate) >= now;
+  }
+
+  // Verificar si la campaña está vencida
+  isExpired() {
+    return new Date() > new Date(this.endDate);
+  }
+
+  // Obtener días restantes
+  getDaysRemaining() {
+    const now = new Date();
+    const endDate = new Date(this.endDate);
+    const diffTime = endDate - now;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    return Math.max(diffDays, 0);
+  }
+
+  // Calcular monto recaudado basado en el progreso
+  calculateRaisedAmount(progress = null) {
+    const currentProgress = progress || this.currentProgress;
+    let total = 0;
+
+    Object.keys(currentProgress).forEach(productId => {
+      const productProgress = currentProgress[productId];
+      const goal = this.goals[productId];
+      
+      if (goal && goal.estimated_price) {
+        total += productProgress.received * goal.estimated_price;
+      }
+    });
+
+    return total;
+  }
+
+  // Calcular monto objetivo basado en las metas
+  static calculateTargetAmount(goals) {
+    let total = 0;
+
+    Object.keys(goals).forEach(productId => {
+      const goal = goals[productId];
+      if (goal.needed && goal.estimated_price) {
+        total += goal.needed * goal.estimated_price;
+      }
+    });
+
+    return total;
+  }
+
+  // Calcular fecha de fin basada en frecuencia
+  static calculateEndDate(startDate, frequency) {
+    const start = new Date(startDate);
+    const end = new Date(start);
+
+    switch (frequency) {
+      case 'weekly':
+        end.setDate(start.getDate() + 7);
+        break;
+      case 'biweekly':
+        end.setDate(start.getDate() + 14);
+        break;
+      case 'monthly':
+        end.setMonth(start.getMonth() + 1);
+        break;
+      default:
+        end.setDate(start.getDate() + 7);
+    }
+
+    return end;
   }
 
   // Limpiar cache de la campaña
-  async clearCache() {
+  async clearCache(tenantId) {
     try {
       const cacheKeys = [
-        `campaign:${this.id}`,
-        `campaign:${this.id}:stats`,
-        `active_campaigns:${this.tenantId}`
+        `campaign:${tenantId}:${this.id}`,
+        `campaigns:${tenantId}:active`,
+        `campaigns:${tenantId}:stats`
       ];
 
       await Promise.all(cacheKeys.map(key => cache.del(key)));
-
-      logger.info('Cache de campaña limpiado', { campaignId: this.id });
     } catch (error) {
       logger.error('Error limpiando cache de campaña:', error);
+    }
+  }
+
+  // Obtener estadísticas de la campaña
+  async getStats(tenantId) {
+    try {
+      const tenantQuery = createTenantQuery(tenantId);
+
+      const [
+        donationsCount,
+        uniqueDonors,
+        averageDonation
+      ] = await Promise.all([
+        tenantQuery.count('donations', { campaign_id: this.id }),
+        db('donations')
+          .where('campaign_id', this.id)
+          .where('tenant_id', tenantId)
+          .countDistinct('user_id as count')
+          .first(),
+        db('donations')
+          .where('campaign_id', this.id)
+          .where('tenant_id', tenantId)
+          .avg('estimated_value as avg')
+          .first()
+      ]);
+
+      return {
+        donations: donationsCount,
+        uniqueDonors: parseInt(uniqueDonors.count) || 0,
+        averageDonation: parseFloat(averageDonation.avg) || 0,
+        completionPercentage: this.getCompletionPercentage(),
+        daysRemaining: this.getDaysRemaining(),
+        isActive: this.isActive(),
+        isExpired: this.isExpired()
+      };
+    } catch (error) {
+      logger.error('Error obteniendo estadísticas de campaña:', error);
+      throw error;
     }
   }
 
@@ -495,9 +537,12 @@ class Campaign {
       helpedFamilies: this.helpedFamilies,
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
+      // Campos calculados
+      completionPercentage: this.getCompletionPercentage(),
+      daysRemaining: this.getDaysRemaining(),
       isActive: this.isActive(),
       isExpired: this.isExpired(),
-      canReceiveDonations: this.canReceiveDonations()
+      productProgress: this.getProductProgress()
     };
   }
 }
